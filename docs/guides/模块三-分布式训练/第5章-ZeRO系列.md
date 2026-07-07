@@ -1,9 +1,9 @@
 ---
-title: "第4章：ZeRO显存优化系列"
+title: "第5章：ZeRO显存优化系列"
 description: "逐层拆解 ZeRO-1/2/3 的切分策略与通信代价，掌握 ZeRO-Offload/Infinity 的异构内存卸载机制"
 pubDate: 2026-04-16
 category: "distributed-training"
-order: 23
+order: 14
 tags: ["ZeRO", "DeepSpeed", "显存优化", "Offload", "通信分析"]
 ---
 
