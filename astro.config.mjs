@@ -9,7 +9,7 @@ import rehypeKatex from 'rehype-katex';
 
 export default defineConfig({
   site: 'https://caomaolufei.github.io',
-  base: '/VerificationGuide',
+  base: '/',
   integrations: [tailwind(), sitemap()],
   experimental: {
     contentLayer: true,
