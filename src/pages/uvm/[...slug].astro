@@ -1,0 +1,35 @@
+---
+import { type CollectionEntry, getCollection } from 'astro:content';
+import Layout from '../../layouts/Layout.astro';
+import GuideContent from '../../components/GuideContent.astro';
+import { flattenChapterOrder } from '../../utils/chapterGrouping';
+
+const CATEGORY = 'uvm' as const;
+const URL_PREFIX = '/uvm';
+
+export async function getStaticPaths() {
+  const guides = await getCollection('guides', ({ data }) => !data.draft && data.category === 'uvm');
+  return guides.map((guide) => ({
+    params: { slug: guide.id },
+    props: guide,
+  }));
+}
+
+type Props = CollectionEntry<'guides'>;
+
+const guide = Astro.props;
+
+const allGuides = await getCollection('guides', ({ data }) => !data.draft);
+const sameCategory = flattenChapterOrder(
+  allGuides.filter((g) => g.data.category === CATEGORY)
+);
+---
+
+<Layout title={`${guide.data.title} - UVM学习指南`} description={guide.data.description}>
+  <GuideContent
+    guide={guide}
+    sameCategory={sameCategory}
+    sidebarCategories={[CATEGORY]}
+    urlPrefix={URL_PREFIX}
+  />
+</Layout>

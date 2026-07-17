@@ -16,12 +16,9 @@ const guides = await getCollection('guides', ({ data }) => !data.draft);
 const currentPath = decodeURIComponent(Astro.url.pathname);
 
 const gradientMap: Record<string, string> = {
-  'learning-path': '#3B82F6',
-  'prerequisites': '#06B6D4',
-  'cuda-optimization': '#F59E0B',
-  'distributed-training': '#10B981',
-  'inference-optimization': '#8B5CF6',
-  'performance-analysis': '#F97316',
+  'sv': '#3B82F6',
+  'uvm': '#10B981',
+  'soc': '#F59E0B',
 };
 
 const categoriesToShow = categories

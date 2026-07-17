@@ -9,7 +9,7 @@ import rehypeKatex from 'rehype-katex';
 
 export default defineConfig({
   site: 'https://caomaolufei.github.io',
-  base: '/AIInfraGuide',
+  base: '/VerificationGuide',
   integrations: [tailwind(), sitemap()],
   experimental: {
     contentLayer: true,
@@ -22,6 +22,7 @@ export default defineConfig({
       },
       defaultColor: 'light',
       wrap: false,
+      langs: ['verilog'],
     },
     remarkPlugins: [remarkMath],
     rehypePlugins: [
