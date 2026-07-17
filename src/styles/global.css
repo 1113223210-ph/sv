@@ -17,6 +17,7 @@
     scroll-behavior: smooth;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "liga" 0, "calt" 0;
   }
 
   ::selection {
