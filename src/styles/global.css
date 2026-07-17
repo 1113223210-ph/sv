@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+*, *::before, *::after {
+  font-feature-settings: "liga" 0, "calt" 0 !important;
+  -webkit-font-feature-settings: "liga" 0, "calt" 0 !important;
+  font-variant-ligatures: none !important;
+}
+
 @layer utilities {
   .scrollbar-hide {
     scrollbar-width: none; /* Firefox */
@@ -17,11 +23,6 @@
     scroll-behavior: smooth;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: "liga" 0, "calt" 0;
-  }
-
-  * {
-    font-feature-settings: "liga" 0, "calt" 0;
   }
 
   ::selection {
