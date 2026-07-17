@@ -145,7 +145,7 @@ html.dark .astro-code span {
   overflow-x: auto;
   background: transparent !important;
   font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-feature-settings: "liga" 1, "calt" 1;
+  font-feature-settings: "liga" 0, "calt" 0;
   font-size: inherit;
   line-height: inherit;
   counter-reset: line;
