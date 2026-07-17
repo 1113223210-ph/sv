@@ -20,6 +20,10 @@
     font-feature-settings: "liga" 0, "calt" 0;
   }
 
+  * {
+    font-feature-settings: "liga" 0, "calt" 0;
+  }
+
   ::selection {
     background-color: rgba(0, 122, 255, 0.3);
   }
