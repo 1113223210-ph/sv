@@ -480,6 +480,10 @@ endmodule
 
 ### 5.6 typedef / enum / struct
 
+- **typedef** — 给类型起别名，简化声明
+- **enum** — 把一组常量打包，限定取值范围
+- **struct** — 把多个变量打包成一个整体
+
 ```verilog
 // typedef — 自定义类型别名
 typedef logic [7:0] data_t;
@@ -494,6 +498,84 @@ typedef struct packed {
     bit [7:0]  data;
 } instruction_t;    // 总计 32 位
 ```
+
+**没有 typedef/enum/struct 时（代码混乱）：**
+
+```verilog
+module bad_example(
+    input  logic [7:0]  state,      // 这8位是什么？
+    input  logic [31:0] addr,       // 地址？数据？
+    input  logic [31:0] data,
+    input  logic        type,       // 0还是1代表什么？
+    input  logic [3:0]  burst_len   // 这4位啥意思？
+);
+```
+
+看到代码完全不知道每个信号的含义和取值范围。
+
+**有 typedef/enum/struct 后（代码清晰）：**
+
+```verilog
+// typedef：给类型起别名
+typedef logic [7:0]  byte_t;
+typedef logic [31:0] word_t;
+typedef logic [3:0]  burst_len_t;
+
+// enum：限定取值范围 + 自动命名
+typedef enum logic [7:0] {
+    IDLE    = 8'h00,
+    RUNNING = 8'h01,
+    STOP    = 8'h02,
+    ERROR   = 8'hFF
+} state_t;
+
+typedef enum logic {
+    READ  = 1'b0,
+    WRITE = 1'b1
+} rw_t;
+
+typedef enum logic [1:0] {
+    BURST_1   = 2'b00,
+    BURST_4   = 2'b01,
+    BURST_8   = 2'b10,
+    BURST_16  = 2'b11
+} burst_t;
+
+// struct：多个信号打包成一个整体
+typedef struct {
+    word_t       addr;
+    word_t       data;
+    rw_t         rw;
+    burst_t      burst;
+    burst_len_t  len;
+} transaction_t;
+
+// 使用
+module good_example(
+    input  state_t        state,      // 清楚：状态机状态
+    input  transaction_t  txn         // 清楚：一次传输事务
+);
+
+    // 用 enum 名字，不用魔法数字
+    if (state == IDLE) begin
+        // ...
+    end
+
+    if (txn.rw == WRITE) begin
+        // 比 if (type == 1'b1) 清晰多了
+    end
+
+endmodule
+```
+
+| 写法 | 含义 |
+|------|------|
+| `if (type == 1'b1)` | 不知道1代表什么 |
+| `if (txn.rw == WRITE)` | 一眼看出是写操作 |
+| `if (state == 8'hFF)` | 魔法数字，容易写错 |
+| `if (state == ERROR)` | 清晰明了 |
+
+封装层次从低到高：`typedef` → `enum` → `struct` → `class` → `interface`，都是封装，只是"重量"不同。
 
 ## 第六层：表达式 — 细节胶水
 
