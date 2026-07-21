@@ -1,0 +1,73 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+const papers = [
+  {
+    id: 'basic', title: 'A 卷：基础与编码能力', subtitle: '建议用时 80 分钟 · 满分 100 分',
+    questions: [
+      { id: 'a1', kind: 'choice', point: 5, prompt: '在 always_ff @(posedge clk) 的时序逻辑中，通常应使用哪种赋值？', options: ['A. =', 'B. <=', 'C. assign', 'D. initial'], answer: 'B', note: '时序寄存器通常用非阻塞赋值 <=，可避免同一时钟沿的仿真竞争。' },
+      { id: 'a2', kind: 'choice', point: 5, prompt: 'task 与 function 的关键区别是：', options: ['A. task 必须有返回值', 'B. function 可以包含时延控制', 'C. task 可以消耗仿真时间，function 不应包含时延控制', 'D. 两者只能在 module 外定义'], answer: 'C', note: 'task 可使用 #、@ 等时序控制；function 应在零仿真时间内返回。' },
+      { id: 'a3', kind: 'choice', point: 5, prompt: '最适合使用两级触发器同步器的 CDC 场景是：', options: ['A. 单比特、稳定电平信号', 'B. 连续变化的 32 位数据总线', 'C. 任意窄脉冲', 'D. 异步 FIFO 的数据阵列'], answer: 'A', note: '多位数据需要握手或 FIFO；窄脉冲可能被目的时钟漏采。' },
+      { id: 'a4', kind: 'choice', point: 5, prompt: '深度为 16 的同步 FIFO，读写指针通常需要几位来区分空和满？', options: ['A. 4 位', 'B. 5 位', 'C. 16 位', 'D. 17 位'], answer: 'B', note: '4 位寻址加一位环回标志，用来区分指针相等时的空与满。' },
+      { id: 'a5', kind: 'judge', point: 5, prompt: 'AXI 发送方可以等待 READY 拉高后再断言 VALID。', options: ['A. 对', 'B. 错'], answer: 'B', note: '发送方不能等待 READY，否则双方可能相互等待而死锁；VALID 应保持到握手。' },
+      { id: 'a6', kind: 'judge', point: 5, prompt: 'uvm_sequence_item 应派生自 uvm_component，因为它也需要参与 phase。', options: ['A. 对', 'B. 错'], answer: 'B', note: 'sequence item 是事务对象，属于 uvm_object 体系；component 才有层次和 phase。' },
+      { id: 'a7', kind: 'judge', point: 5, prompt: '异步复位可异步断言，但通常应同步释放到各自时钟域。', options: ['A. 对', 'B. 错'], answer: 'A', note: '同步释放可降低恢复时序不一致的风险。' },
+      { id: 'a8', kind: 'judge', point: 5, prompt: 'covergroup 达到 100% 即能证明 DUT 不存在 bug。', options: ['A. 对', 'B. 错'], answer: 'B', note: '覆盖率只能证明已建模的目标被命中，不能证明需求和检查器没有遗漏。' },
+      { id: 'a9', kind: 'text', point: 20, prompt: '写出 UVM testbench 的典型数据流，并说明 Sequence、Sequencer、Driver、Monitor、Scoreboard 的职责。', note: '主路径：Sequence → Sequencer → Driver → virtual interface → DUT；观测路径：DUT/interface → Monitor → Scoreboard/coverage。Sequence 产生事务；Sequencer 仲裁与派发；Driver 驱动引脚；Monitor 被动采样重组事务；Scoreboard 比较实际与期望。' },
+      { id: 'a10', kind: 'text', point: 15, prompt: '为什么跨时钟域会有亚稳态？两级同步器如何降低风险，又有什么局限？', note: '异步输入靠近采样边沿变化会违反 setup/hold。两级同步器给第一级额外恢复时间，提升 MTBF；但不能保证消除亚稳态，也不能可靠传递窄脉冲或多位相关数据。' },
+      { id: 'a11', kind: 'text', point: 15, prompt: '为深度 8、数据宽度 8 位同步 FIFO 制定最小验证计划。应包含激励、参考模型/检查与覆盖点。', note: '激励应含复位后读、单读写、写满、读空、空读、满写、同时读写、不同数据图样。参考模型用队列：被接受的写 push、被接受的读与队首比较；检查数据顺序、empty/full 和溢出下溢语义。覆盖占用度 0/1/7/8、读写组合、满空交叉与复位前后。' },
+    ],
+  },
+  {
+    id: 'advanced', title: 'B 卷：项目与面试高频', subtitle: '建议用时 90 分钟 · 满分 100 分',
+    questions: [
+      { id: 'b1', kind: 'choice', point: 5, prompt: 'AXI 的 AW、W、B 通道关系中，正确的是：', options: ['A. AW 与 W 必须同拍握手', 'B. B 可在地址和全部写数据被接收后返回', 'C. BVALID 必须依赖 BREADY 才能拉高', 'D. W 通道不需要 WLAST'], answer: 'B', note: '地址与数据通道可独立握手；BVALID 不能等待 BREADY。' },
+      { id: 'b2', kind: 'choice', point: 5, prompt: 'AXI4 的 INCR burst 中 AxLEN=7 表示：', options: ['A. 7 个字节', 'B. 7 拍', 'C. 8 拍', 'D. 8 个地址'], answer: 'C', note: 'AxLEN 的编码值为传输拍数减一。' },
+      { id: 'b3', kind: 'choice', point: 5, prompt: '验证 AXI burst 不跨 4KB 边界时，最关键的输入是：', options: ['A. AxID 与 AxLOCK', 'B. 起始地址、AxLEN 与 AxSIZE', 'C. AxPROT 与 AxCACHE', 'D. RRESP 与 BRESP'], answer: 'B', note: '需由起始地址、拍数和每拍字节数计算传输的末端地址。' },
+      { id: 'b4', kind: 'choice', point: 5, prompt: 'UVM factory 的主要价值是：', options: ['A. 自动连接 TLM port', 'B. 减少对象内存', 'C. 不修改原环境源码的类型替换 override', 'D. 自动结束 run_phase'], answer: 'C', note: 'factory 支持 type/instance override，提高环境复用性。' },
+      { id: 'b5', kind: 'judge', point: 5, prompt: 'RVALID=1 且 RREADY=0 时，RDATA 可以变化。', options: ['A. 对', 'B. 错'], answer: 'B', note: '等待握手期间，RDATA/RRESP/RLAST 等 payload 必须稳定。' },
+      { id: 'b6', kind: 'judge', point: 5, prompt: 'AXI-Lite 的 AR 与 R 是独立通道，均使用 VALID/READY 握手。', options: ['A. 对', 'B. 错'], answer: 'A', note: 'AR 传读地址，R 传读数据和响应。' },
+      { id: 'b7', kind: 'judge', point: 5, prompt: '若 sequence 未 raise objection，run_phase 可能在 sequence 完成前结束。', options: ['A. 对', 'B. 错'], answer: 'A', note: 'run phase 由 objection 控制。' },
+      { id: 'b8', kind: 'judge', point: 5, prompt: 'Gray code 用于异步 FIFO 指针，是为了使每次递增只改变一位。', options: ['A. 对', 'B. 错'], answer: 'A', note: '这样可减少跨域采样多位不一致的风险，但仍需要同步器。' },
+      { id: 'b9', kind: 'text', point: 20, prompt: '写出 AXI 写通道至少 5 项高频协议检查，并说明其中 2 项的典型 bug 后果。', note: '可答：VALID 保持至 READY；等待时 payload 稳定；AW/W 可独立到达；WLAST 仅在最后拍；B 在完整写后返回；burst 合法且不跨 4KB；BRESP 合法。提前撤 VALID 会丢事务或死锁；WLAST 错误会使 burst 边界错位。' },
+      { id: 'b10', kind: 'text', point: 15, prompt: '128 bit AXI 数据口运行在 250 MHz、无空拍时，理论单向带宽是多少？实际带宽为何更低？', note: '128/8 × 250 MHz = 4,000 MB/s，即 4 GB/s（约 3.73 GiB/s）。折损包括地址/响应空拍、READY 反压、仲裁竞争、burst 短、读写切换与从设备延迟。' },
+      { id: 'b11', kind: 'text', point: 15, prompt: '源域 req 窄脉冲传到较慢目的域偶发丢失。说明根因、request/acknowledge 握手核心时序和验证方法。', note: '窄脉冲可能完全落在目的域两个采样边沿之间。源域置 req 并保持；目的域同步 req 后处理并置 ack；源域同步 ack 后清 req；目的域见 req 清除再清 ack。验证要改变时钟比/相位、脉冲宽度、请求间隔和复位位置，计数两端请求确保一一对应，并覆盖最短间隔与相位。' },
+    ],
+  },
+];
+---
+
+<Layout title="在线考卷 | SV-UVM-SOC" description="芯片验证实习生基础与高频在线考卷，支持填写、自动保存和客观题评分。">
+  <section class="relative overflow-hidden py-12 md:py-16">
+    <div class="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_20%_0%,rgba(0,122,255,.12),transparent_35%),radial-gradient(circle_at_85%_10%,rgba(88,86,214,.1),transparent_32%)]"></div>
+    <div class="relative max-w-5xl mx-auto px-6">
+      <p class="text-sm font-semibold text-[#007aff] mb-3">INTERACTIVE QUIZ</p>
+      <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-gray-900 dark:text-white">芯片验证实习生考卷</h1>
+      <p class="mt-4 mb-9 text-gray-600 dark:text-gray-400 text-lg">可选择、可填写、自动保存。提交后自动评分客观题，并展示主观题参考要点。</p>
+
+      <div id="quiz-app" data-papers={JSON.stringify(papers)}>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div id="paper-tabs" class="flex gap-2 p-1.5 rounded-xl bg-gray-100/80 dark:bg-white/[0.06] w-fit"></div>
+          <div class="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400"><span id="save-status">本地自动保存</span><button id="reset-quiz" class="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-white/[.1] hover:bg-white dark:hover:bg-white/[.06]">清空本卷</button></div>
+        </div>
+        <div class="rounded-2xl border border-gray-200/80 dark:border-white/[.08] bg-white/85 dark:bg-white/[.035] shadow-xl shadow-blue-500/[.04] overflow-hidden">
+          <div class="p-6 md:p-8 border-b border-gray-100 dark:border-white/[.07]"><div class="flex flex-wrap justify-between gap-4"><div><h2 id="paper-title" class="text-2xl font-bold text-gray-900 dark:text-white"></h2><p id="paper-subtitle" class="mt-2 text-sm text-gray-500 dark:text-gray-400"></p></div><div class="text-right"><div id="progress-count" class="text-2xl font-bold text-[#007aff]"></div><div class="text-xs text-gray-400 mt-1">已完成题目</div></div></div><div class="mt-5 h-2 rounded-full bg-gray-100 dark:bg-white/[.08] overflow-hidden"><div id="progress-bar" class="h-full rounded-full bg-gradient-to-r from-[#007aff] to-[#5856D6] transition-all"></div></div></div>
+          <form id="quiz-form" class="p-6 md:p-8 space-y-7"></form>
+          <div class="sticky bottom-0 p-5 border-t border-gray-100 dark:border-white/[.07] bg-white/95 dark:bg-[#111]/95 backdrop-blur flex flex-wrap justify-between gap-3"><button id="show-answers" type="button" class="px-4 py-2.5 rounded-xl border border-[#007aff]/30 text-[#007aff] font-medium hover:bg-blue-50 dark:hover:bg-blue-500/10">查看参考答案</button><button id="submit-quiz" type="button" class="px-5 py-2.5 rounded-xl bg-[#007aff] hover:bg-[#006fe6] text-white font-semibold shadow-lg shadow-blue-500/20">提交并评分</button></div>
+        </div>
+        <div id="score-result" class="hidden mt-6 rounded-2xl border border-emerald-200 dark:border-emerald-400/20 bg-emerald-50/70 dark:bg-emerald-400/[.08] p-6"></div>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const root = document.querySelector('#quiz-app'); const papers = JSON.parse(root.dataset.papers || '[]'); const form = document.querySelector('#quiz-form'); const tabs = document.querySelector('#paper-tabs'); const title = document.querySelector('#paper-title'); const subtitle = document.querySelector('#paper-subtitle'); const count = document.querySelector('#progress-count'); const bar = document.querySelector('#progress-bar'); const status = document.querySelector('#save-status'); const result = document.querySelector('#score-result');
+    let active = papers[0].id, reveal = false; let answers = JSON.parse(localStorage.getItem('verification-quiz') || '{}');
+    const getPaper = () => papers.find((p) => p.id === active); const answerKey = (id) => `${active}:${id}`; const save = () => { localStorage.setItem('verification-quiz', JSON.stringify(answers)); status.textContent = '已自动保存'; setTimeout(() => status.textContent = '本地自动保存', 1000); };
+    const escapeHtml = (s) => String(s || '').replace(/[&<>'"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#039;', '"':'&quot;' })[c]);
+    function progress() { const qs = getPaper().questions; const done = qs.filter(q => String(answers[answerKey(q.id)] || '').trim()).length; count.textContent = `${done} / ${qs.length}`; bar.style.width = `${done / qs.length * 100}%`; }
+    function render() { const p = getPaper(); title.textContent = p.title; subtitle.textContent = p.subtitle; tabs.innerHTML = papers.map(x => `<button type="button" data-paper="${x.id}" class="px-4 py-2 rounded-lg text-sm font-medium ${x.id === active ? 'bg-white dark:bg-white/[.12] text-[#007aff] shadow-sm' : 'text-gray-500 dark:text-gray-400'}">${x.title.slice(0, 3)}</button>`).join(''); let n = 0; form.innerHTML = p.questions.map(q => { n++; if(q.kind === 'text') return `<section class="quiz-question" data-id="${q.id}"><h3 class="text-base font-semibold text-gray-900 dark:text-white leading-relaxed"><span class="mr-2 text-[#007aff]">${n}.</span>${q.prompt}<span class="ml-2 text-xs font-normal text-gray-400">${q.point} 分</span></h3><textarea data-text="${q.id}" rows="7" placeholder="在这里填写答案…" class="mt-4 w-full rounded-xl border border-gray-200 dark:border-white/[.1] bg-gray-50/70 dark:bg-black/20 p-4 text-sm leading-6 text-gray-800 dark:text-gray-200 focus:border-[#007aff] focus:ring-2 focus:ring-[#007aff]/20 outline-none">${escapeHtml(answers[answerKey(q.id)])}</textarea>${reveal ? `<details class="mt-3 rounded-xl bg-blue-50/70 dark:bg-blue-500/[.08] p-4"><summary class="cursor-pointer text-sm font-medium text-[#007aff]">展开参考要点</summary><p class="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700 dark:text-gray-300">${escapeHtml(q.note)}</p></details>` : ''}</section>`; const selected = answers[answerKey(q.id)]; return `<fieldset class="quiz-question" data-id="${q.id}"><legend class="text-base font-semibold text-gray-900 dark:text-white leading-relaxed"><span class="mr-2 text-[#007aff]">${n}.</span>${q.prompt}<span class="ml-2 text-xs font-normal text-gray-400">${q.point} 分</span></legend><div class="grid gap-2 mt-4">${q.options.map(o => { const v=o[0], good=reveal&&v===q.answer, bad=reveal&&selected===v&&v!==q.answer; return `<label class="flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer ${good?'border-emerald-400 bg-emerald-50 dark:bg-emerald-500/10':bad?'border-red-400 bg-red-50 dark:bg-red-500/10':'border-gray-200 dark:border-white/[.09] hover:border-[#007aff]/50'}"><input type="radio" name="${q.id}" value="${v}" ${selected===v?'checked':''} class="accent-[#007aff]"/><span class="text-sm text-gray-700 dark:text-gray-300">${o}</span></label>` }).join('')}</div>${reveal?`<p class="mt-3 text-sm text-emerald-700 dark:text-emerald-300"><b>参考：</b>${q.note}</p>`:''}</fieldset>`; }).join(''); tabs.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{active=b.dataset.paper; reveal=false; result.classList.add('hidden'); render()})); progress(); }
+    form.addEventListener('change', e=>{const t=e.target;if(t instanceof HTMLInputElement){answers[answerKey(t.name)]=t.value;save();progress();}}); form.addEventListener('input', e=>{const t=e.target;if(t instanceof HTMLTextAreaElement){answers[answerKey(t.dataset.text)]=t.value;save();progress();}});
+    document.querySelector('#show-answers').addEventListener('click',()=>{reveal=!reveal;document.querySelector('#show-answers').textContent=reveal?'隐藏参考答案':'查看参考答案';render();}); document.querySelector('#submit-quiz').addEventListener('click',()=>{const qs=getPaper().questions.filter(q=>q.kind!=='text'), correct=qs.filter(q=>answers[answerKey(q.id)]===q.answer).length, score=correct*5;reveal=true;result.classList.remove('hidden');result.innerHTML=`<div class="flex items-center justify-between gap-4"><div><p class="text-sm font-medium text-emerald-700 dark:text-emerald-300">客观题评分完成</p><p class="mt-1 text-sm text-gray-600 dark:text-gray-300">答对 ${correct} / ${qs.length} 题。主观题请依据参考要点自评或交由导师批改。</p></div><div class="text-3xl font-bold text-emerald-600 dark:text-emerald-400">${score}<span class="text-base font-medium"> / 40</span></div></div>`;render();result.scrollIntoView({behavior:'smooth',block:'nearest'});}); document.querySelector('#reset-quiz').addEventListener('click',()=>{if(!confirm('确定清空当前考卷的全部作答吗？'))return;getPaper().questions.forEach(q=>delete answers[answerKey(q.id)]);save();reveal=false;result.classList.add('hidden');render();}); render();
+  </script>
+</Layout>
