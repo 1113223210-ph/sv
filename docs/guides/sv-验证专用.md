@@ -9,7 +9,7 @@ tags: [SV, 验证]
 
 # SystemVerilog 验证专用语法
 
-> 这些语法主要用于Testbench和验证环境，不可综合
+> 本章语法主要用于 Testbench 和验证环境。class、coverage、UVM 和大多数断言不可综合；`repeat`、事件控制等是否可综合则取决于具体 RTL 写法和综合工具。
 
 ---
 
@@ -35,36 +35,49 @@ tags: [SV, 验证]
 ### 7.1 repeat — 循环执行N次
 
 ```verilog
-// 重复执行5次
+// 在下降沿驱动，使信号在下一个上升沿前稳定
 repeat(5) begin
-    @(posedge clk);
-    wr_en = 1;
-    wr_data = $random;//$开头是系统内建函数
+    @(negedge clk);
+    wr_en   = 1;
+    wr_data = $urandom; // $urandom 是 SystemVerilog 内建无符号随机数函数
 end
+@(negedge clk);
+wr_en = 0;
 ```
 
-**等价于：**
+当循环体只需要固定重复执行，且不关心当前是第几次循环时，以上代码也可以写成：
 ```verilog
 for (int i = 0; i < 5; i++) begin
-    @(posedge clk);
-    wr_en = 1;
-    wr_data = $random;
+    @(negedge clk);
+    wr_en   = 1;
+    wr_data = $urandom;
 end
+@(negedge clk);
+wr_en = 0;
 ```
+
+在这个例子中，两者的执行效果相同：都在连续 5 个时钟周期准备随机写数据，信号会在随后的上升沿被 DUT 稳定采样。测试平台若在 `posedge` 与 DUT 同时驱动/采样，可能产生竞争（race）。
+
+- `repeat(5)` 强调“固定重复 5 次”，不提供循环计数变量。
+- `for` 提供计数变量 `i`，适合地址递增、按轮次生成数据或打印循环编号等场景。
+
+因此，简单重复时 `repeat` 更直观；需要使用具体轮次或编号时，应使用 `for`。
 
 ### 7.2 随机数生成
 
 ```verilog
-$random              // 返回32位随机整数（有正有负）
-$random % 256        // 0~255随机数
-$urandom_range(0, 255) // 0~255随机数（推荐）
-$urandom_range(16)   // 0~15随机数
+$random                 // 返回32位有符号随机整数（可能为负）
+$urandom                // 返回32位无符号随机整数
+$urandom_range(255, 0)  // 0~255随机数（推荐，含边界）
+$urandom_range(16)      // 0~16随机数（含边界）
 ```
+
+`$urandom_range(max, min)` 的参数顺序是“最大值、最小值”；省略 `min` 时默认为 0。若把两个参数反向书写，语言会自动交换它们，但建议仍按 `max, min` 的顺序书写。不要用 `$random % 256` 生成字节随机数：由于 `$random` 可能为负，结果也可能为负。
 
 **常用写法：**
 ```verilog
-wr_data = $random % 256;           // 8位随机数据
-address = $urandom_range(0, 1023); // 10位随机地址
+wr_data = $urandom_range(255, 0);    // 8位随机数据：0~255
+address = $urandom_range(1023, 0);   // 10位随机地址：0~1023
 ```
 
 ### 7.3 格式化输出
@@ -79,10 +92,10 @@ $display("时间: %0t", $time);      // 仿真时间
 **格式符对比：**
 | 格式符 | 含义 | 示例（值=255） |
 |---|---|---|
-| `%d` | 十进制，补空格 | ` 255` |
-| `%0d` | 十进制，不补空格 | `255` |
-| `%h` | 十六进制，补空格 | ` ff` |
-| `%0h` | 十六进制，不补空格 | `ff` |
+| `%d` | 十进制，使用默认显示宽度 | `255` |
+| `%0d` | 十进制，不使用默认宽度填充 | `255` |
+| `%h` | 十六进制，通常保留信号位宽对应的前导零 | `ff` |
+| `%0h` | 十六进制，压缩不必要的前导零 | `ff` |
 | `%b` | 二进制 | `11111111` |
 | `%0t` | 仿真时间，不补空格 | `12345` |
 
@@ -122,8 +135,8 @@ always #(CLK_PERIOD/2) clk = ~clk;  // 每半个周期翻转
 
 | 函数 | 作用 | 示例 |
 |---|---|---|
-| `$random` | 32位随机整数 | `$random % 256` |
-| `$urandom_range` | 范围随机数 | `$urandom_range(0, 15)` |
+| `$random` | 32位有符号随机整数 | `$random` |
+| `$urandom_range` | 指定闭区间内的无符号随机数 | `$urandom_range(15, 0)` |
 | `$display` | 打印信息 | `$display("data=%h", data)` |
 | `$time` | 仿真时间 | `$display("t=%0t", $time)` |
 | `$finish` | 结束仿真 | `$finish` |
@@ -133,11 +146,11 @@ always #(CLK_PERIOD/2) clk = ~clk;  // 每半个周期翻转
 ### 7.7 验证模板
 
 ```verilog
-`timescale 1ns / 1ps
-
 module tb_example;
     // 参数
-    parameter CLK_PERIOD = 10;
+    timeunit 1ns;
+    timeprecision 1ps;
+    parameter time CLK_PERIOD = 10ns;
     
     // 信号
     logic clk;
@@ -501,7 +514,7 @@ endclass
 | 不加`virtual` | 隐藏（hiding） |
 | 加`virtual` | 重写（override） |
 
-**建议：父类方法都加`virtual`**，方便子类重写。
+**建议：只有需要通过父类句柄体现多态行为的方法才加 `virtual`**。构造函数等不参与多态分派的方法无需声明为 `virtual`。
 
 #### 继承关系
 
@@ -669,7 +682,7 @@ endclass
 | `==` | 等于 | `data == 0` |
 | `!=` | 不等于 | `data != 0` |
 | `<` `>` `<=` `>=` | 比较 | `addr < 32'h1000` |
-| `{a, b}` | 拼接 | `addr[1:0] == 2'b00` |
+| `{a, b}` | 集合中的多个值（常用于 `inside`） | `cmd inside {8'h01, 8'h02}` |
 
 #### soft约束
 
@@ -718,9 +731,7 @@ addr[2:0] == 3'b000;  // 低3位必须为000
 
 **为什么需要对齐？**
 
-CPU访问存储器时，通常按字（word）读取：
-- 32位CPU一次读4字节
-- 地址必须是4的倍数，才能对齐读取
+CPU、总线和存储器可能按字（word）访问数据。常见的 32 位访问一次为 4 字节，因此经常要求 4 字节对齐；实际对齐要求仍以 ISA、总线协议和存储器属性为准。
 
 **不对齐会怎样？**
 
@@ -748,7 +759,7 @@ CPU访问存储器时，通常按字（word）读取：
 | 32位 | 4字节对齐 | `addr[1:0]==00` | 4字节 |
 | 64位 | 8字节对齐 | `addr[2:0]==000` | 8字节 |
 
-**不是非要是4的倍数，取决于CPU位宽**
+**并非总是 4 的倍数：对齐要求取决于访问宽度和具体协议**
 
 ```verilog
 // 16位CPU：2字节对齐
@@ -811,7 +822,7 @@ constraint c_align_mod {
 **位操作 vs 取模，两种写法对比**
 
 ```verilog
-// 写法1：位操作（推荐，综合效率高）
+// 写法1：位操作（推荐，表达清晰且通常更利于约束求解）
 constraint c1 { addr[1:0] == 2'b00; }
 
 // 写法2：取模运算（更直观）
@@ -983,13 +994,22 @@ $display("Pass: %0d, Fail: %0d", sb.pass_count, sb.fail_count);
 class fifo #(parameter WIDTH = 8, DEPTH = 16);
     logic [WIDTH-1:0] queue[$];
 
-    function void push(input logic [WIDTH-1:0] data);
-        if (queue.size() < DEPTH)
-            queue.push_back(data);
+    function bit push(input logic [WIDTH-1:0] data);
+        if (queue.size() >= DEPTH) begin
+            $error("FIFO model overflow");
+            return 0;
+        end
+        queue.push_back(data);
+        return 1;
     endfunction
 
-    function logic [WIDTH-1:0] pop();
-        return queue.pop_front();
+    function bit pop(output logic [WIDTH-1:0] data);
+        if (queue.size() == 0) begin
+            $error("FIFO model underflow");
+            return 0;
+        end
+        data = queue.pop_front();
+        return 1;
     endfunction
 endclass
 
@@ -1050,11 +1070,11 @@ fifo #(32, 64)  fifo32;
 
 ```verilog
 // 简单断言
-assert property (@(posedge clk)
-    req |-> ##3 ack
-) else $error("req到ack超过3周期");
+assert property (@(posedge clk) disable iff (!rst_n)
+    req |-> ##[1:3] ack
+) else $error("req 后 1~3 个周期内未收到 ack");
 
-// 含义：req有效后，3个周期内必须有ack
+// 含义：req 有效后，1~3 个周期内必须有 ack
 ```
 
 ### 9.2 序列（sequence）
@@ -1062,21 +1082,23 @@ assert property (@(posedge clk)
 ```verilog
 // 定义序列
 sequence s_wr;
-    @(posedge clk) awvalid && awready;
+    awvalid && awready;
 endsequence
 
 sequence s_data;
-    @(posedge clk) wvalid && wready;
+    wvalid && wready;
 endsequence
 
 // 使用序列
 property p_wr_data;
-    @(posedge clk)
-    s_wr |-> s_data ##0 wlast;
+    @(posedge clk) disable iff (!rst_n)
+    s_wr |-> ##[0:1] s_data;
 endproperty
 
 assert property (p_wr_data);
 ```
+
+这里仅演示 sequence 的定义和组合，不是完整 AXI 协议断言：AXI 的 AW 和 W 通道可独立握手，不能强制所有设计都满足上述先后关系。
 
 ### 9.3 常用断言操作符
 
@@ -1106,41 +1128,41 @@ assert property (@(posedge clk)
 
 ```verilog
 // ##n 延迟n个周期
-assert property (@(posedge clk)
+assert property (@(posedge clk) disable iff (!rst_n)
     req |-> ##3 ack
 );
-// 含义：req 为真后，3个周期内必须有 ack
+// 含义：req 为真后，恰好 3 个周期时 ack 必须为真
 
 // ##[min:max] 延迟范围
-assert property (@(posedge clk)
+assert property (@(posedge clk) disable iff (!rst_n)
     req |-> ##[1:5] ack
 );
 // 含义：req 为真后，1~5个周期内必须有 ack
 
 // ##0 同一周期（与 |-> 类似）
-assert property (@(posedge clk)
+assert property (@(posedge clk) disable iff (!rst_n)
     req |-> ##0 ack
 );
 // 含义：req 为真时，同一周期 ack 必须为真
 
-// ##$ 无限延迟（可配合其他操作符）
-assert property (@(posedge clk)
-    req |-> ##[1:$] ack
+// 无界延迟：表达“最终发生”，不能替代有上限的 timeout 检查
+assert property (@(posedge clk) disable iff (!rst_n)
+    req |-> strong(##[1:$] ack)
 );
-// 含义：req 为真后，最终必须有 ack（不限周期数）
+// 含义：req 为真后，最终必须有 ack；工程中的 timeout 通常应写成有界范围
 ```
 
 #### 组合使用
 
 ```verilog
 // 多步延迟
-assert property (@(posedge clk)
-    req |-> ##1 req_ack |-> ##2 data_valid
+assert property (@(posedge clk) disable iff (!rst_n)
+    req |-> ##1 req_ack ##2 data_valid
 );
 // 含义：req → 1周期后 req_ack → 2周期后 data_valid
 
 // 范围延迟 + 蕴含
-assert property (@(posedge clk)
+assert property (@(posedge clk) disable iff (!rst_n)
     $rose(valid) |-> ##[1:3] ready && (data == expected)
 );
 // 含义：valid 上升沿后，1~3周期内 ready 为真且数据正确
@@ -1151,10 +1173,10 @@ assert property (@(posedge clk)
 **高频（必须掌握）：**
 ```verilog
 // $past(signal) - 前1个周期的值
-assert property (@(posedge clk)
+assert property (@(posedge clk) disable iff (!rst_n)
     wr_data == $past(wr_data) + 1
 );
-// 含义：数据每周期递增1
+// 含义：复位释放后，数据每周期递增1；disable iff 也避免仿真起始时 $past 无历史值
 
 // $past(signal, n) - 前n个周期的值
 assert property (@(posedge clk)
@@ -1215,7 +1237,7 @@ assert property (@(posedge clk)
 );
 // 含义：data 没有X/Z时，valid 必须为真
 
-// $sampled(signal) - 采样信号值（用于覆盖率）
+// $sampled(signal) - 取得并发断言当前采样值（常用于 assertion 的 action block）
 assert property (@(posedge clk)
     $sampled(cmd) == 8'h01 |-> rd_en
 );
@@ -1224,15 +1246,20 @@ assert property (@(posedge clk)
 #### 其他操作符
 
 ```verilog
-// within 包含
-assert property (@(posedge clk)
-    $rose(valid) |-> within ($rose(valid) ##1 $rose(ready))
-);
+// within：左侧序列必须完全落在右侧序列的匹配窗口内
+sequence s_valid_burst;
+    valid[*1:3];
+endsequence
+sequence s_transfer_window;
+    $rose(start) ##[1:5] done;
+endsequence
+assert property (@(posedge clk) s_valid_burst within s_transfer_window);
 
-// throughout 持续期间
-assert property (@(posedge clk)
-    reset throughout (valid [*0:$])
-);
+// throughout：在右侧序列匹配的每个周期，左侧表达式都必须为真
+sequence s_reset_active;
+    !rst_n[*1:$];
+endsequence
+assert property (@(posedge clk) !wr_en throughout s_reset_active);
 ```
 
 ### 9.4 覆盖断言
@@ -1276,19 +1303,21 @@ class transaction_coverage;
         cp_addr: coverpoint addr {
             bins low  = {[0:32'hFF]};
             bins mid  = {[32'h100:32'h1FF]};
-            bins high = {[32'h200:32'hFF]};
+            bins high = {[32'h200:32'h2FF]};
         }
 
         // 交叉覆盖
         cx_cmd_addr: cross cp_cmd, cp_addr;
     endgroup
 
-    // 实例化
-    covergroup_inst = new();
+    // 类内 covergroup 在构造函数中实例化
+    function new();
+        cg = new();
+    endfunction
 
     // 采样
     function void sample();
-        covergroup_inst.sample();
+        cg.sample();
     endfunction
 endclass
 ```
@@ -1318,7 +1347,7 @@ covergroup cg;
 
     // 序列覆盖
     cp_seq: coverpoint data {
-        bins seq1 = (0, 1, 2);
+        bins seq1 = (0 => 1 => 2);
         bins seq2 = (3[*3]);  // 3连续出现3次
     }
 endgroup
@@ -1341,15 +1370,18 @@ covergroup cg;
     cp_cmd.option.goal = 90;
 endgroup
 
+// 在模块、program 或 interface 作用域中创建 covergroup 实例
+cg cg_inst = new();
+
 // 检查覆盖率
 initial begin
     // 运行测试...
     #10000;
 
-    if (cg.get_coverage() >= 100)
-        $display("覆盖率达标: %0f%%", cg.get_coverage());
+    if (cg_inst.get_coverage() >= 100)
+        $display("覆盖率达标: %0f%%", cg_inst.get_coverage());
     else
-        $warning("覆盖率不足: %0f%%", cg.get_coverage());
+        $warning("覆盖率不足: %0f%%", cg_inst.get_coverage());
 end
 ```
 
@@ -1372,24 +1404,56 @@ uvm_test
 
 ### 11.2 基础UVM组件
 
-```verilog
+下面代码展示组件的关键接口；完整环境还需要在 `my_env` 中创建 driver、monitor、scoreboard，并连接 monitor 的 analysis port 和 scoreboard。虚接口由 test 或 env 通过 `uvm_config_db` 配置。
+
+```systemverilog
+import uvm_pkg::*;
+`include "uvm_macros.svh"
+
+interface my_bus_if(input logic clk);
+    logic        wr, valid, ready;
+    logic [31:0] addr, data;
+endinterface
+
+class my_transaction extends uvm_sequence_item;
+    rand logic        wr;
+    rand logic [31:0] addr, data;
+
+    `uvm_object_utils(my_transaction)
+
+    function new(string name = "my_transaction");
+        super.new(name);
+    endfunction
+endclass
+
 // Driver
-class my_driver extends uvm_driver #(transaction);
+class my_driver extends uvm_driver #(my_transaction);
     `uvm_component_utils(my_driver)
+
+    virtual my_bus_if vif;
 
     function new(string name = "my_driver", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        if (!uvm_config_db#(virtual my_bus_if)::get(this, "", "vif", vif))
+            `uvm_fatal("NOVIF", "my_driver 未取得虚接口 vif")
+    endfunction
+
     task run_phase(uvm_phase phase);
-        transaction txn;
+        my_transaction txn;
         forever begin
             seq_item_port.get_next_item(txn);
-            // 驱动信号
+            @(negedge vif.clk);  // 避免与 DUT 在 posedge 的采样竞争
             vif.wr   <= txn.wr;
             vif.addr <= txn.addr;
             vif.data <= txn.data;
-            @(posedge vif.clk);
+            vif.valid <= 1;
+            do @(posedge vif.clk); while (!vif.ready);
+            @(negedge vif.clk);
+            vif.valid <= 0;
             seq_item_port.item_done();
         end
     endtask
@@ -1399,19 +1463,27 @@ endclass
 class my_monitor extends uvm_monitor;
     `uvm_component_utils(my_monitor)
 
-    uvm_analysis_port #(transaction) ap;
+    virtual my_bus_if vif;
+    uvm_analysis_port #(my_transaction) ap;
 
     function new(string name = "my_monitor", uvm_component parent = null);
         super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        if (!uvm_config_db#(virtual my_bus_if)::get(this, "", "vif", vif))
+            `uvm_fatal("NOVIF", "my_monitor 未取得虚接口 vif")
         ap = new("ap", this);
     endfunction
 
     task run_phase(uvm_phase phase);
-        transaction txn;
+        my_transaction txn;
         forever begin
             @(posedge vif.clk);
             if (vif.valid && vif.ready) begin
-                txn = transaction::type_id::create("txn");
+                txn = my_transaction::type_id::create("txn");
+                txn.wr   = vif.wr;
                 txn.addr = vif.addr;
                 txn.data = vif.data;
                 ap.write(txn);
@@ -1424,17 +1496,30 @@ endclass
 class my_scoreboard extends uvm_scoreboard;
     `uvm_component_utils(my_scoreboard)
 
-    uvm_analysis_imp #(transaction, my_scoreboard) imp;
+    uvm_analysis_imp #(my_transaction, my_scoreboard) actual_imp;
+    my_transaction expected_q[$];
 
     function new(string name = "my_scoreboard", uvm_component parent = null);
         super.new(name, parent);
-        imp = new("imp", this);
+        actual_imp = new("actual_imp", this);
     endfunction
 
-    function void write(transaction txn);
-        // 比较实际输出与预期
-        if (txn.actual != txn.expected)
-            `uvm_error("SCOREBOARD", $sformatf("不匹配: %h vs %h", txn.actual, txn.expected))
+    // 参考模型或预测器应调用此函数写入预期事务
+    function void push_expected(my_transaction expected);
+        expected_q.push_back(expected);
+    endfunction
+
+    // monitor 的 analysis port 连接到 actual_imp 后，会调用此函数
+    function void write(my_transaction actual);
+        my_transaction expected;
+        if (expected_q.size() == 0) begin
+            `uvm_error("SCOREBOARD", "收到实际事务，但没有对应的预期事务")
+            return;
+        end
+        expected = expected_q.pop_front();
+        if (actual.wr !== expected.wr || actual.addr !== expected.addr || actual.data !== expected.data)
+            `uvm_error("SCOREBOARD", $sformatf("不匹配: exp=%s act=%s",
+                expected.sprint(), actual.sprint()))
     endfunction
 endclass
 ```
@@ -1461,7 +1546,6 @@ class my_test extends uvm_test;
         phase.raise_objection(this);
         seq = my_sequence::type_id::create("seq");
         seq.start(env.agent.sequencer);
-        #1000;
         phase.drop_objection(this);
     endtask
 endclass
@@ -1470,13 +1554,13 @@ endclass
 ### 11.4 UVM序列
 
 ```verilog
-class my_sequence extends uvm_sequence #(transaction);
+class my_sequence extends uvm_sequence #(my_transaction);
     `uvm_object_utils(my_sequence)
 
     task body();
-        transaction txn;
+        my_transaction txn;
         repeat(10) begin
-            txn = transaction::type_id::create("txn");
+            txn = my_transaction::type_id::create("txn");
             start_item(txn);
             assert(txn.randomize());
             finish_item(txn);
@@ -1514,4 +1598,4 @@ endclass
 
 ---
 
-*最后更新: 2026-07-16*
+*最后更新: 2026-07-22*

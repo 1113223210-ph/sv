@@ -20,6 +20,8 @@ tags: [SV, 通用]
         ↓            (盒子长什么样)
 第二层  赋值       assign, =, <=
         ↓            (值怎么传)
+第三层  时序控制   initial, #N, @(posedge/negedge)
+        ↓            (什么时候发生)
 第四层  流程控制   if/else, case/casez, for, foreach
         ↓            (逻辑怎么组织)
 第五层  封装       task, function, interface, 模块例化, typedef, enum, struct
@@ -103,7 +105,7 @@ output logic [7:0]  result;    // 信号从这里出去
 
 ```verilog
 parameter D_WIDTH = 16;     // 默认 16, 例化时可以改
-parameter A_MAX = 32;
+parameter DEPTH = 32;
 ```
 
 命名约定：
@@ -114,8 +116,9 @@ parameter A_MAX = 32;
 | `A_` | Address | 地址相关 | `A_WIDTH` = 地址位宽（地址总线多少根线） |
 
 ```
-A_MAX = 最大地址数 / 存储深度（总共多少个单元）
-A_MAX = 2^(A_WIDTH)       →   A_WIDTH=5  →  A_MAX=32
+DEPTH = 存储深度（总共多少个单元）
+DEPTH = 2^(A_WIDTH)       →   A_WIDTH=5  →  DEPTH=32
+最大地址 = DEPTH - 1      →   最大地址=31
 ```
 
 地址位宽决定了能寻址多少个单元，数据位宽决定了每个单元存多少位。
@@ -139,7 +142,7 @@ assign sum = a + b;
       │   /
 ```
 
-没有时钟。`a` 或 `b` 任意时刻变化，`sum` 立刻更新。`assign` 只能用 `=` (阻塞赋值)。
+没有时钟。`a` 或 `b` 任意时刻变化，`sum` 立刻更新。`assign` 使用连续赋值语法 `=`；它不是过程块中的“阻塞赋值”，阻塞/非阻塞的概念只适用于过程赋值。
 
 常见用法：
 
@@ -193,7 +196,7 @@ end
 
 规则：时序逻辑一律 `<=`，组合逻辑（`assign`/`always_comb`）用 `=`。
 
-### 2.4 initial — 只跑一次（TB 专用）
+### 2.4 initial — 仿真启动时执行一次（通常用于 TB）
 
 ```verilog
 initial begin
@@ -204,7 +207,7 @@ initial begin
 end
 ```
 
-不可综合——真实芯片里没有"只跑一次"这种东西，只用于测试。
+在 ASIC 流程中通常不可综合，因此主要用于测试平台；部分 FPGA 工具支持特定寄存器或存储器的 `initial` 初始化，具体以工具和器件能力为准。
 
 ### 2.5 begin / end — 多行打包
 
@@ -222,10 +225,15 @@ end
 ### 2.6 #N — 等 N 个时间单位
 
 ```verilog
-#10;                    // 空等 10ns
-#10 clk = ~clk;         // 等 10ns 后翻转时钟
-#20 data = 8'hFF;       // 等 20ns 后赋值
+timeunit 1ns;
+timeprecision 1ps;
+
+#10;                    // 空等 10 个 timeunit；此处为 10ns
+#10 clk = ~clk;         // 10ns 后翻转时钟
+#20 data = 8'hFF;       // 20ns 后赋值
 ```
+
+未声明 `timeunit` 时，`#10` 的实际时间由编译单元的 ``timescale`` 决定，不能一概理解为 10ns。
 
 ### 2.7 @(posedge) / @(negedge) — 等到边沿
 
@@ -242,6 +250,8 @@ end
 @(posedge clk or negedge rst_n)   // 任意一个来就触发
 ```
 
+`@(posedge ready)` 只等待 `ready` 从低到高的事件；它不等价于 ready/valid 握手。若 `ready` 已经为高，等待该事件不会立即返回；握手协议应在时钟沿检查 `valid && ready`。
+
 ## 第四层：流程控制 — 逻辑怎么组织
 
 ### 4.1 if / else — 条件分支
@@ -257,19 +267,58 @@ if (!rst_n)
 else
     count <= count + 1;
 
-// 多分支 — 总线 slave 的典型行为
-if (bus.write) begin                 // 总线发起写请求
-    memory[addr] <= bus.wdata;        //   把总线上的数据写入 memory
-    bus.ready <= 1;                   //   回应"写好了"
-end else if (bus.read) begin          // 总线发起读请求
-    bus.rdata <= memory[addr];        //   从 memory 取数据放到读数据线上
-    bus.ready <= 1;                   //   回应"数据放好了"
-end else begin                        // 总线没有请求（空闲）
-    bus.ready <= 0;                   //   "没在干活"
+// 简化的同步 slave：只在 valid && ready 的握手周期接受请求
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        bus.ready <= 0;
+        bus.rdata <= '0;
+    end else begin
+        bus.ready <= 1;                // 本例始终可以接受请求
+        if (bus.valid && bus.write)
+            memory[bus.addr] <= bus.wdata;
+        else if (bus.valid && bus.read)
+            bus.rdata <= memory[bus.addr];
+    end
+end
+
+// 简化的 master：发起请求后保持 valid，直到 valid && ready 握手完成
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        bus.valid <= 0;
+        bus.write <= 0;
+        bus.read  <= 0;
+    end else if (!bus.valid && master_write) begin
+        bus.write <= 1;
+        bus.read  <= 0;
+        bus.addr  <= master_addr;
+        bus.wdata <= master_wdata;
+        bus.valid <= 1;
+    end else if (!bus.valid && master_read) begin
+        bus.write <= 0;
+        bus.read  <= 1;
+        bus.addr  <= master_addr;
+        bus.valid <= 1;
+    end else if (bus.valid && bus.ready) begin
+        if (bus.read)
+            master_rdata <= bus.rdata;
+        bus.valid <= 0;
+        bus.write <= 0;
+        bus.read  <= 0;
+    end
 end
 ```
 
-`bus` = 总线（bus），一组共享信号线（`write`/`read`/`wdata`/`rdata`/`ready`/`addr`），CPU 和所有外设都挂在这组线上通信。这个 `if/else` 是典型的从设备（slave）响应逻辑：
+`bus` = 总线（bus），一组共享信号线（`write`/`read`/`wdata`/`rdata`/`ready`/`addr`/`valid`），CPU 和所有外设都挂在这组线上通信。
+
+**Slave vs Master 对比**：
+
+| 特征 | Slave（从设备） | Master（主设备） |
+|---|---|---|
+| 角色 | 响应请求 | 发起请求 |
+| 产生信号 | `ready` | `valid` |
+| 主动行为 | 等待并响应 | 发送地址和数据 |
+
+**Slave 响应逻辑**：
 
 | 总线动作 | 存储器行为 | 回应 |
 |---|---|---|
@@ -288,7 +337,7 @@ case (state)
     default  : next_state = IDLE;    // 没匹配到时走这里
 endcase
 
-// casez — z 位不参与比较（z = "随便你是什么"）
+// casez — case 表达式中的 Z，以及 case item 中的 Z/? 视为 don't-care
 // irq = interrupt request（中断请求），外设需要CPU处理时拉高irq信号
 casez (irq)
     4'b???1 : $display("irq[0] is 1");  // 只关心 bit[0], 其他位不管
@@ -300,7 +349,7 @@ endcase
 | 类型 | 比较规则 | 常用场景 |
 |---|---|---|
 | `case` | 完全相等 | 状态机、译码器 |
-| `casez` | z 位不关心 | 中断优先级 |
+| `casez` | Z 和 `?` 位可不关心；按分支顺序优先匹配 | 掩码译码、中断优先级 |
 | `casex` | z 和 x 都不关心 | 极少用，别用 |
 
 ### 4.3 for / foreach — 循环
@@ -325,15 +374,15 @@ foreach (matrix[row, col])
 foreach (数组名[索引变量])
 
 foreach (memory[i])         // 一维：自动遍历 memory[0] 到 memory[最后一个]
-foreach (matrix[r][c])      // 二维：自动遍历所有行和列
+foreach (matrix[r, c])      // 二维：自动遍历所有行和列
 ```
 
 | 特性 | `for` | `foreach` |
 |---|---|---|
 | 范围 | 手动写 `i=0; i<16; i++` | 自动推断 |
 | 写错边界 | 可能越界 | 不会 |
-| 多维 | 手写嵌套 | `foreach(arr[i][j])` 一行搞定 |
-| 推荐 | ⚠️ 能用 | ✅ SV 推荐 |
+| 多维 | 手写嵌套 | `foreach(arr[i, j])` 一行遍历数组维度 |
+| 推荐 | 计数循环、非数组循环 | 遍历数组元素时更简洁 |
 
 ## 第五层：封装 — 大块怎么搭
 
@@ -356,11 +405,11 @@ reset_dut;
 // 2. 写寄存器任务
 task write_reg(input [7:0] addr, data);
     begin
-        @(posedge clk);
+        @(negedge clk);      // 在 DUT 采样沿前驱动
         wr_en = 1;
         wr_addr = addr;
         wr_data = data;
-        @(posedge clk);
+        @(negedge clk);
         wr_en = 0;
     end
 endtask
@@ -388,7 +437,7 @@ wait_ready(50);
 always #10 clk = ~clk;  // 最常用写法
 ```
 
-### 5.2 function — 有返回值的子程序
+### 5.2 function — 零时间执行的子程序
 
 ```verilog
 function int adder(int a, int b);
@@ -403,11 +452,11 @@ result = adder(3, 5);    // result = 8
 
 | 特性 | `task` | `function` |
 |---|---|---|
-| 返回值 | ❌ | ✅ 必须 `return` |
+| 返回值 | 可通过 `output/inout` 返回多个值 | 可有返回值；也可写成 `function void` |
 | `#` / `@(posedge)` | ✅ 能 | ❌ 不能 |
 | 消耗仿真时间 | ✅ | ❌（立刻算完） |
 | 用在 | 接口操作、时序流程 | 数学计算、数据转换 |
-| 调用 | `task_name(args);` | `result = func(args);` |
+| 调用 | `task_name(args);` | `result = func(args);` 或单独调用 `void'(...)` |
 
 ### 5.4 模块例化 — 盒子插盒子
 
@@ -453,20 +502,29 @@ debounce #(.DELAY(20)) u_debounce (...);
 ```verilog
 interface bus_if(input logic clk);
     logic [31:0] addr, wdata, rdata;
-    logic        write, read, ready;
+    logic        write, read, valid, ready;
 
     task do_write(input logic [31:0] a, d);
-        @(posedge clk);
+        @(negedge clk);       // 在采样沿前驱动，避免 race
         addr  <= a;
         wdata <= d;
         write <= 1;
-        @(posedge ready);
+        read  <= 0;
+        valid <= 1;
+        do @(posedge clk); while (!ready);
+        @(negedge clk);
+        valid <= 0;
         write <= 0;
     endtask
+
+    modport master (input clk, ready, rdata,
+                    output addr, wdata, write, read, valid);
+    modport slave  (input clk, addr, wdata, write, read, valid,
+                    output ready, rdata);
 endinterface
 
-module master(bus_if bus);    // 一个 bus 替代 6 根信号
-module slave(bus_if bus);
+module master(bus_if.master bus);    // 一个 bus 替代多根信号，并限制方向
+module slave(bus_if.slave bus);
 
 module top;
     logic clk;
@@ -478,18 +536,18 @@ endmodule
 
 好处：增删信号只改 `interface` 一处，不用每个模块改一遍。
 
-### 5.6 typedef / enum / struct
+### 5.6 typedef /enum/ struct
 
 - **typedef** — 给类型起别名，简化声明
-- **enum** — 把一组常量打包，限定取值范围
+- **enum** — 为有限集合的取值命名；显式类型转换仍可构造其他位模式
 - **struct** — 把多个变量打包成一个整体
 
 ```verilog
 // typedef — 自定义类型别名
 typedef logic [7:0] data_t;
 
-// enum — 给值起名字
-typedef enum {IDLE, READ, WRITE, DONE} state_t;
+// enum — 给值起名字；为避免同一作用域重名，使用前缀
+typedef enum {S_IDLE, S_READ, S_WRITE, S_DONE} simple_state_t;
 
 // struct — 打包相关信号
 typedef struct packed {
@@ -521,17 +579,17 @@ typedef logic [7:0]  byte_t;
 typedef logic [31:0] word_t;
 typedef logic [3:0]  burst_len_t;
 
-// enum：限定取值范围 + 自动命名
+// enum：有限集合的取值 + 自动命名
 typedef enum logic [7:0] {
-    IDLE    = 8'h00,
-    RUNNING = 8'h01,
-    STOP    = 8'h02,
-    ERROR   = 8'hFF
+    STATE_IDLE    = 8'h00,
+    STATE_RUNNING = 8'h01,
+    STATE_STOP    = 8'h02,
+    STATE_ERROR   = 8'hFF
 } state_t;
 
 typedef enum logic {
-    READ  = 1'b0,
-    WRITE = 1'b1
+    RW_READ  = 1'b0,
+    RW_WRITE = 1'b1
 } rw_t;
 
 typedef enum logic [1:0] {
@@ -542,7 +600,7 @@ typedef enum logic [1:0] {
 } burst_t;
 
 // struct：多个信号打包成一个整体
-typedef struct {
+typedef struct packed {
     word_t       addr;
     word_t       data;
     rw_t         rw;
@@ -557,11 +615,11 @@ module good_example(
 );
 
     // 用 enum 名字，不用魔法数字
-    if (state == IDLE) begin
+    if (state == STATE_IDLE) begin
         // ...
     end
 
-    if (txn.rw == WRITE) begin
+    if (txn.rw == RW_WRITE) begin
         // 比 if (type == 1'b1) 清晰多了
     end
 
@@ -571,11 +629,13 @@ endmodule
 | 写法 | 含义 |
 |------|------|
 | `if (type == 1'b1)` | 不知道1代表什么 |
-| `if (txn.rw == WRITE)` | 一眼看出是写操作 |
+| `if (txn.rw == RW_WRITE)` | 一眼看出是写操作 |
 | `if (state == 8'hFF)` | 魔法数字，容易写错 |
-| `if (state == ERROR)` | 清晰明了 |
+| `if (state == STATE_ERROR)` | 清晰明了 |
 
 封装层次从低到高：`typedef` → `enum` → `struct` → `class` → `interface`，都是封装，只是"重量"不同。
+
+枚举标签位于声明它的作用域中；若多个 enum 放在同一 module/package/class，标签名称不能重复。工程中常用前缀、package 或 class 作用域避免冲突。
 
 ## 第六层：表达式 — 细节胶水
 
@@ -602,7 +662,7 @@ endmodule
 8'b1000_0000       // 无符号 → 128
 8'sb1000_0000      // 有符号 → -128 (s = signed)
 8'sh80             // 有符号十六进制 → -128
-'hF                 // 默认 32 位 → 32'h0000_000F (不写位宽有坑)
+'hF                 // 未写位宽的十六进制常量至少为 32 位；表达式上下文仍可能影响最终位宽
 
 '0    // 全 0, 宽度由上下文推断
 '1    // 全 1
@@ -711,13 +771,13 @@ $display("wrote %h to %h", data, addr);
 
 | 格式符 | 含义 | 示例（值=255） |
 |---|---|---|
-| `%h` | 十六进制 hex | `ff` |
-| `%d` | 十进制 decimal | `255` |
+| `%h` | 十六进制，使用默认显示宽度 | `ff` |
+| `%d` | 十进制，使用默认显示宽度 | `255` |
 | `%b` | 二进制 binary | `11111111` |
-| `%0h` | 十六进制，不补空格 | `ff` |
-| `%0d` | 十进制，不补空格 | `255` |
+| `%0h` | 十六进制，不使用默认宽度填充 | `ff` |
+| `%0d` | 十进制，不使用默认宽度填充 | `255` |
 
-不加 `0` 时默认按位宽对齐补前导空格。实际写 TB 时 `%0h` 最常用——打印出来的东西不会莫名其妙有空格。
+不加 `0` 时使用默认字段宽度；`%0h`/`%0d` 使用最小必要宽度。十六进制的前导零、十进制的空格填充会随数据类型和字段宽度而变化，因此不应简单理解为“是否补空格”。
 
 ### 6.4 注释
 
@@ -804,6 +864,10 @@ end
 
 - ✅ `assign` `always` `=` vs `<=`
 
+### 第三层 时序控制
+
+- ✅ `initial` `#N` `@(posedge)` / `@(negedge)`
+
 ### 第四层 流程控制
 
 - ✅ `if`/`else` `case`/`casez` `for`/`foreach`
@@ -826,14 +890,14 @@ end
 | 坑 | 说明 |
 |---|---|
 | 时序逻辑里用 `=` | `always @(posedge clk)` 里用 `=` 会导致意外顺序, 用 `<=` |
-| 组合逻辑里用 `<=` | `assign` 或 `always_comb` 里用 `<=` 编译报错 |
+| 组合逻辑里用 `<=` | 通常仍能编译，但调度语义不符合组合逻辑预期；应使用 `=`，lint 常会报警 |
 | 忘记复位 | 仿真一开始寄存器是 x, 不复位永远是 x |
-| 位宽不够 | `assign sum = a + b;` a,b 8 位 → sum 要 9 位装进位 |
+| 位宽不够 | 若只写 `assign sum = a + b;`，8 位 `sum` 会丢弃进位；应使用 9 位结果或 `{carry, sum}` |
 | `always_comb` 不完整 | `if` 没写 else 可能综合出锁存器 (latch) |
 | `byte` 是有符号的 | `8'hFF` 赋给 `byte` = -1, 不是 255 |
 | `bit` 吞 x | 含 x 的 DUT 信号接给 `bit` 变量 → x 变 0 → bug 藏掉 |
-| 不写位宽 | `'hF` 默认 32 位, 截断时可能对也可能错 |
+| 不写位宽 | `'hF` 至少为 32 位，参与表达式时易出现符号扩展或截断误判 |
 
 ---
 
-*最后更新: 2026-07-16*
+*最后更新: 2026-07-22*
