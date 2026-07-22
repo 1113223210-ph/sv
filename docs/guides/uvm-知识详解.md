@@ -1149,19 +1149,33 @@ UVM 方式：  需要什么对象 → 告诉工厂 → 工厂给你创建
 ### 为什么要用工厂？
 
 ```verilog
-// 测试 A 用普通 Driver
-factory.set_type_override_by_type(
-    adpcm_driver::get_type(),
-    adpcm_driver_special::get_type()  // 用特殊版 Driver
-);
+// Agent/Env 中始终通过工厂请求创建基础 Driver
+m_driver = adpcm_driver::type_id::create("m_driver", this);
 
-// 不改任何代码，只是告诉工厂："换一个版本"
+// 测试 A：不设置 override
+// 实际创建 adpcm_driver
+
+// 测试 B：在基础 Driver 被创建前设置 type override
+set_type_override_by_type(
+    adpcm_driver::get_type(),          // 原始类型
+    adpcm_driver_special::get_type()   // 替换类型
+);
+// 此后再执行上面的 type_id::create()，实际创建 adpcm_driver_special
 ```
+
+```text
+请求创建 adpcm_driver
+        ↓ 工厂查找 override 规则
+实际创建 adpcm_driver_special
+```
+
+这样，Agent/Env 的源码不需要为了不同测试反复修改。注意：如果组件使用
+`new()` 创建，就绕过了工厂，override 不会生效。
 
 ### 工厂注册
 
 ```verilog
-class adpcm_driver extends uvm_driver;
+class adpcm_driver extends uvm_driver #(adpcm_seq_item);
     `uvm_component_utils(adpcm_driver)  // ← 注册到工厂
 endclass
 
@@ -1444,39 +1458,64 @@ Override：  "把 A 换成 B" → 工厂自动创建 B
 
 ```verilog
 // 原始 Driver
-class adpcm_driver extends uvm_driver;
+class adpcm_driver extends uvm_driver #(adpcm_seq_item);
     `uvm_component_utils(adpcm_driver)
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
     // ...
 endclass
 
 // 特殊版 Driver：继承原始 Driver，保持相同事务类型和接口约定
 class adpcm_driver_special extends adpcm_driver;
     `uvm_component_utils(adpcm_driver_special)
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
     // 额外功能...
 endclass
 
-// Test 中进行 Override
-class my_test extends uvm_test;
+// 前文的 adpcm_test 已通过 type_id::create() 创建 m_driver。
+// 特殊 Test 只需继承它，并在父类创建 Driver 前设置 override。
+class adpcm_special_test extends adpcm_test;
+    `uvm_component_utils(adpcm_special_test)
+
+    function new(string name, uvm_component parent);
+        super.new(name, parent);
+    endfunction
+
     function void build_phase(uvm_phase phase);
-        // 告诉工厂：把 adpcm_driver 换成 adpcm_driver_special
-        factory.set_type_override_by_type(
+        set_type_override_by_type(
             adpcm_driver::get_type(),
             adpcm_driver_special::get_type()
         );
 
-        // 创建时，工厂自动用 adpcm_driver_special
-        m_driver = adpcm_driver::type_id::create("m_driver", this);
-        // ↑ 实际创建的是 adpcm_driver_special
+        // adpcm_test::build_phase() 在这里请求创建 adpcm_driver，
+        // 工厂实际返回 adpcm_driver_special。
+        super.build_phase(phase);
     endfunction
 endclass
 ```
+
+这里直接调用的 `set_type_override_by_type()` 是 `uvm_component` 提供的工厂便利方法，
+Test 继承自 `uvm_component`，因此不需要一个未声明的 `factory` 变量。也可以显式取得
+`uvm_factory::get()` 返回的句柄后再调用工厂方法。
 
 ### Override 的价值
 
 | 方式 | 修改代码？ | 影响范围 |
 |------|-----------|---------|
 | 直接改 Driver | ✅ 需要改 | 影响所有 Test |
-| Factory Override | ❌ 不需要改 | 只影响当前 Test |
+| Type Override | ❌ 不需要改环境代码 | 设置后所有对原类型的工厂创建 |
+| Instance Override | ❌ 不需要改环境代码 | 只替换指定层次路径下的实例 |
+
+`set_type_override_by_type()` 是类型级替换，不仅影响示例中的 `m_driver`。如果同一环境中
+创建了多个 `adpcm_driver`，它们都会被替换。只想替换某一个实例时，应使用
+`set_inst_override_by_type()` 并提供正确的实例路径。
 
 ### 简单类比
 
