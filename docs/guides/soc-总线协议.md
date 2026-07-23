@@ -1,34 +1,47 @@
-﻿---
-title: "总线协议详解"
-description: "AXI/AHB/APB等总线协议详解"
+---
+title: "SoC 总线协议与片上互连详解"
+description: "从 APB、AHB-Lite、AXI4-Lite 到 AXI4，并介绍 Crossbar、协议桥与 NoC 片上互连"
 pubDate: 2025-01-01
 category: soc
 order: 2
-tags: [SOC, 总线协议]
+tags: [SOC, 总线协议, 片上互连, NoC]
 ---
 
-# SoC 总线协议详解
+# SoC 总线协议与片上互连详解
 
-## 总线协议概述
+## 总线协议与片上互连概述
 
 ### 什么是总线协议
 
 **总线协议**是 SoC 中各模块之间通信的规范，定义了：
+
 - 信号线命名和功能
 - 时序关系（valid/ready 握手）
 - 数据传输方式（突发、流水）
 - 错误处理机制
 - 多主设备仲裁
 
+**片上互连**则是连接 Master、Slave 和存储系统的硬件结构，例如共享总线、Crossbar 和 NoC。协议规定“事务如何表达和传输”，互连结构决定“事务经过什么路径到达目标”。两者相关，但不是同一个概念。
+
 ### 常见互连按使用范围分类
 
 ```
-片上互连: AXI / AHB / APB / CHI / NoC
+片上总线或事务协议: APB / AHB / AXI / ACE / CHI
+片上互连结构: Shared Bus / Crossbar / NoC
 芯片间或板级互连: PCIe / USB / Ethernet / SATA / HDMI / JTAG
 存储器接口: DDR / LPDDR / HBM
 ```
 
-这些类别可能在具体系统中交叉，例如 PCIe 控制器内部仍会通过 AXI 连接 SoC；DDR 则是存储器接口，不应与 AXI/APB 视为同一层协议。
+这些类别可能在具体系统中交叉。例如，AXI 事务可以由 Crossbar 转发，也可以经 Network Interface 转换成 Packet/Flit 后穿过 NoC；PCIe 控制器内部仍可能通过 AXI 连接 SoC。DDR 是存储器接口，不应与 AXI/APB 视为同一层协议。
+
+### 推荐学习顺序
+
+```text
+APB → AHB-Lite → AXI4-Lite → AXI4 → ACE/CHI → Crossbar/NoC
+简单外设   流水传输      五通道握手    高并发事务   一致性      大规模互连
+```
+
+本章按复杂度逐步增加的顺序展开。这个顺序用于学习，并不表示后一个协议取代前一个协议；真实 SoC 往往会同时使用 APB、AHB-Lite、AXI 和多种互连结构。
 
 ---
 
@@ -129,1075 +142,9 @@ ACE 在 AXI 基础上增加了:
 | **AHB** | 1999 | 流水线 + Burst | 中速设备带宽 |
 | **AXI3** | 2003 | 五通道独立 + Outstanding + ID | 高性能并发 |
 | **AXI4** | 2010 | 简化写通道 + 扩展突发 | 降低复杂度、提高效率 |
-| **ACE** | 2011 | Snoop + MOESI | 多核缓存一致性 |
+| **ACE** | 2011 | Snoop + 一致性事务 | 多核缓存一致性 |
 
-### 1.1 AXI4 协议
-
-#### 架构特点
-
-```
-AXI4 架构:
-┌─────────────────────────────────────────────────────────────┐
-│                      AXI4 Interconnect                      │
-├─────────────────────────────────────────────────────────────┤
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
-│  │ Master 0 │    │ Master 1 │    │ Master 2 │               │
-│  │  (CPU)   │    │  (DMA)   │    │  (GPU)   │               │
-│  └────┬─────┘    └────┬─────┘    └────┬─────┘               │
-│       │               │               │                     │
-│       ▼               ▼               ▼                     │
-│  ┌─────────────────────────────────────────────┐            │
-│  │              Crossbar Switch                │            │
-│  │           (交叉开关/互联矩阵)                 │           │
-│  └─────────────────────────────────────────────┘            │
-│       │               │               │                     │
-│       ▼               ▼               ▼                     │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
-│  │ Slave 0  │    │ Slave 1  │    │ Slave 2  │               │
-│  │  (DDR)   │    │  (SRAM)  │    │  (APB)   │               │
-│  └──────────┘    └──────────┘    └──────────┘               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-#### 五个独立通道
-
-| 通道 | 名称 | 方向 | 功能 |
-|---|---|---|---|
-| **AW** | Write Address | Master→Slave | 写地址+控制 |
-| **W** | Write Data | Master→Slave | 写数据 |
-| **B** | Write Response | Slave→Master | 写完成响应 |
-| **AR** | Read Address | Master→Slave | 读地址+控制 |
-| **R** | Read Data | Slave→Master | 读数据+响应 |
-
-#### AXI4 信号接口
-
-```verilog
-// AXI4 完整接口定义
-interface axi4_if #(
-    parameter ADDR_WIDTH = 32,
-    parameter DATA_WIDTH = 64,
-    parameter ID_WIDTH   = 4
-)(
-    input  logic aclk,
-    input  logic aresetn
-);
-
-    // 写地址通道 (AW)
-    logic [ID_WIDTH-1:0]    awid;
-    logic [ADDR_WIDTH-1:0]  awaddr;
-    logic [7:0]             awlen;      // 突发长度 (0-255)
-    logic [2:0]             awsize;     // 突发大小
-    logic [1:0]             awburst;    // 突发类型
-    logic                   awlock;     // 锁定类型
-    logic [3:0]             awcache;    // 缓存属性
-    logic [2:0]             awprot;     // 保护属性
-    logic [3:0]             awqos;      // QoS 标识
-    logic [3:0]             awregion;
-    logic [3:0]             awuser;
-    logic                   awvalid;
-    logic                   awready;
-
-    // 写数据通道 (W)
-    logic [DATA_WIDTH-1:0]  wdata;
-    logic [DATA_WIDTH/8-1:0] wstrb;    // 字节选通
-    logic                   wlast;      // 最后一个数据
-    logic [3:0]             wuser;
-    logic                   wvalid;
-    logic                   wready;
-
-    // 写响应通道 (B)
-    logic [ID_WIDTH-1:0]    bid;
-    logic [1:0]             bresp;      // 响应码
-    logic [3:0]             buser;
-    logic                   bvalid;
-    logic                   bready;
-
-    // 读地址通道 (AR)
-    logic [ID_WIDTH-1:0]    arid;
-    logic [ADDR_WIDTH-1:0]  araddr;
-    logic [7:0]             arlen;
-    logic [2:0]             arsize;
-    logic [1:0]             arburst;
-    logic                   arlock;
-    logic [3:0]             arcache;
-    logic [2:0]             arprot;
-    logic [3:0]             arqos;
-    logic [3:0]             arregion;
-    logic [3:0]             aruser;
-    logic                   arvalid;
-    logic                   arready;
-
-    // 读数据通道 (R)
-    logic [ID_WIDTH-1:0]    rid;
-    logic [DATA_WIDTH-1:0]  rdata;
-    logic [1:0]             rresp;
-    logic                   rlast;
-    logic [3:0]             ruser;
-    logic                   rvalid;
-    logic                   rready;
-
-    modport master (
-        input  aclk, aresetn, awready, wready, bid, bresp, buser, bvalid,
-               arready, rid, rdata, rresp, rlast, ruser, rvalid,
-        output awid, awaddr, awlen, awsize, awburst, awlock, awcache,
-               awprot, awqos, awregion, awuser, awvalid,
-               wdata, wstrb, wlast, wuser, wvalid, bready,
-               arid, araddr, arlen, arsize, arburst, arlock, arcache,
-               arprot, arqos, arregion, aruser, arvalid, rready
-    );
-
-    modport slave (
-        input  aclk, aresetn, awid, awaddr, awlen, awsize, awburst, awlock,
-               awcache, awprot, awqos, awregion, awuser, awvalid,
-               wdata, wstrb, wlast, wuser, wvalid, bready,
-               arid, araddr, arlen, arsize, arburst, arlock, arcache,
-               arprot, arqos, arregion, aruser, arvalid, rready,
-        output awready, wready, bid, bresp, buser, bvalid,
-               arready, rid, rdata, rresp, rlast, ruser, rvalid
-    );
-
-endinterface
-```
-
-#### AXI4 Burst 传输
-
-```
-AXI4 单个三拍写突发时序 (INCR 类型，AWLEN=2):
-
-         ┌─────┐     ┌─────┐     ┌─────┐
-AW_VALID │     │
-         └─────┘
-              │
-              ▼
-AW_ADDR  ────A0────────────────────────────
-
-         ┌─────┐     ┌─────┐     ┌─────┐
-W_VALID  │     │     │     │     │     │
-         └─────┘     └─────┘     └─────┘
-              │           │           │
-              ▼           ▼           ▼
-W_DATA   ────D0──────────D1──────────D2────
-          W_LAST=0    W_LAST=0    W_LAST=1
-
-         ┌─────┐
-B_VALID  │     │
-         └─────┘
-              │
-              ▼
-B_RESP   ────OKAY────
-```
-
-#### AXI4 突发类型
-
-| 类型 | `awburst` | 地址行为 | 用途 |
-|---|---|---|---|
-| **FIXED** | 2'b00 | 地址不变 | FIFO 访问 |
-| **INCR** | 2'b01 | 地址递增 | 顺序访问（最常用） |
-| **WRAP** | 2'b10 | 地址环绕 | 缓存行填充 |
-
-#### AXI4 响应码
-
-| 响应码 | 含义 | 说明 |
-|---|---|---|
-| `2'b00` (OKAY) | 正常访问 | 成功完成 |
-| `2'b01` (EXOKAY) | 独占访问成功 | 原子操作 |
-| `2'b10` (SLVERR) | 从设备错误 | 地址有效但从设备出错 |
-| `2'b11` (DECERR) | 解码错误 | 地址无效，无从设备匹配 |
-
-#### AXI4-Lite 精简版
-
-```verilog
-// AXI4-Lite 信号（无突发、无 ID）
-interface axi4_lite_if #(
-    parameter ADDR_WIDTH = 32,
-    parameter DATA_WIDTH = 32
-)(
-    input  logic aclk,
-    input  logic aresetn
-);
-
-    // 写地址通道 (无 awlen/awsize/awburst)
-    logic [ADDR_WIDTH-1:0]  awaddr;
-    logic [2:0]             awprot;
-    logic                   awvalid;
-    logic                   awready;
-
-    // 写数据通道；WSTRB 是 AXI4-Lite 的标准信号
-    logic [DATA_WIDTH-1:0]  wdata;
-    logic [DATA_WIDTH/8-1:0] wstrb;
-    logic                   wvalid;
-    logic                   wready;
-
-    // 写响应通道 (无 bid)
-    logic [1:0]             bresp;
-    logic                   bvalid;
-    logic                   bready;
-
-    // 读地址通道 (无 arlen/arsize/arburst)
-    logic [ADDR_WIDTH-1:0]  araddr;
-    logic [2:0]             arprot;
-    logic                   arvalid;
-    logic                   arready;
-
-    // 读数据通道 (无 rid/rlast)
-    logic [DATA_WIDTH-1:0]  rdata;
-    logic [1:0]             rresp;
-    logic                   rvalid;
-    logic                   rready;
-
-    modport master (
-        input  aclk, aresetn, awready, wready, bresp, bvalid,
-               arready, rdata, rresp, rvalid,
-        output awaddr, awprot, awvalid, wdata, wstrb, wvalid, bready,
-               araddr, arprot, arvalid, rready
-    );
-
-    modport slave (
-        input  aclk, aresetn, awaddr, awprot, awvalid, wdata, wstrb,
-               wvalid, bready, araddr, arprot, arvalid, rready,
-        output awready, wready, bresp, bvalid, arready, rdata, rresp, rvalid
-    );
-
-endinterface
-```
-
-#### AXI4 vs AXI4-Lite vs AXI4-Stream
-
-| 特性 | AXI4 | AXI4-Lite | AXI4-Stream |
-|---|---|---|---|
-| **突发传输** | 支持 FIXED/INCR/WRAP | 不支持 | 连续流，不使用 AxBURST |
-| **地址** | 有 | 有 | 无 |
-| **ID 标识** | 有 | 无 | 可选 TID；另有可选 TDEST |
-| **字节选通** | WSTRB | WSTRB | 可选 TKEEP/TSTRB |
-| **数据宽度** | 8/16/32/64/128/256/512/1024 | 32/64 | 任意 |
-| **典型应用** | DDR、SRAM、高带宽 | 寄存器配置 | 视频流、DSP |
-
-#### Outstanding 事务机制
-
-```
-Outstanding 事务原理:
-
-主设备发送地址后，不必等待数据响应即可发送下一个地址
-这种"流水线"方式可以隐藏从设备的访问延迟
-
-时间线示例 (Outstanding 深度 = 4):
-
-时钟:    T0   T1   T2   T3   T4   T5   T6   T7   T8
-         │    │    │    │    │    │    │    │    │
-Master:  A0   A1   A2   A3   ─    ─    ─    ─    ─
-         │         │         │         │
-         ▼         ▼         ▼         ▼
-Slave:   ─    ─    ─    ─    D0   D1   D2   D3   ─
-                                 (从设备响应)
-
-没有 Outstanding (每笔事务等待完成):
-T0: A0 → T3: D0 → T4: A1 → T7: D1 → T8: A2 ...
-总延迟 = 4笔 × 4周期 = 16 周期
-
-有 Outstanding (深度=4):
-T0: A0, T1: A1, T2: A2, T3: A3 → T4: D0, T5: D1, T6: D2, T7: D3
-总延迟 = 4 + 4 = 8 周期 (节省 50%)
-```
-
-```
-Outstanding 深度选择:
-
-深度 = 1:  无流水，每笔事务独立完成
-           优点: 无乱序风险
-           缺点: 延迟大
-
-深度 = 2:  可流水 2 笔事务
-           优点: 简单，适合中速外设
-           缺点: 性能提升有限
-
-深度 = 4-8: 常用于 DDR 控制器
-           优点: 充分利用 DDR 的流水线
-           缺点: 需要更大的 ID 缓冲
-
-深度 = 16+: 用于高性能 SoC 核心互联
-           优点: 最大化带宽利用率
-           缺点: 面积和功耗代价
-```
-
-#### AXI4 交叉开关互联详解
-
-```
-3×3 全交叉开关内部结构:
-
-          M0        M1        M2
-          │         │         │
-          ▼         ▼         ▼
-       ┌──────┐ ┌──────┐ ┌──────┐
-       │ ARB0 │ │ ARB1 │ │ ARB2 │  ← 每个 Slave 端口有仲裁器
-       └──┬───┘ └──┬───┘ └──┬───┘
-          │        │        │
-     ┌────┴────┬───┴────┬───┴────┐
-     │         │        │        │
-     ▼         ▼        ▼        ▼
-  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
-  │SW_00 │ │SW_10 │ │SW_20 │ │ ...  │  ← 每个交叉点有开关
-  │SW_01 │ │SW_11 │ │SW_21 │ │      │
-  │SW_02 │ │SW_12 │ │SW_22 │ │      │
-  └──────┘ └──────┘ └──────┘ └──────┘
-     │         │        │
-     ▼         ▼        ▼
-   S0(DDR)  S1(SRAM)  S2(APB)
-
-每个开关 SW_ij 控制 Master i 到 Slave j 的连接
-仲裁器 ARB_j 决定哪个 Master 可以访问 Slave j
-```
-
-```
-交叉开关连接矩阵:
-
-Master\Slave  │  S0(DDR)  │  S1(SRAM)  │  S2(APB)
-──────────────┼───────────┼────────────┼──────────
-M0 (CPU)      │     ●     │     ●      │     ●
-M1 (DMA)      │     ●     │     ●      │     ●
-M2 (GPU)      │     ●     │     ○      │     ●
-
-● = 可访问   ○ = 不可访问 (稀疏交叉开关)
-
-Full Crossbar: 所有交叉点都有开关，面积 O(M×S)
-Sparse Crossbar: 只在需要的交叉点有开关，面积 < O(M×S)
-```
-
-#### AXI4 写交织（Write Interleaving）
-
-```
-写交织规则:
-
-规则 1: 同一写事务的所有 W 拍不能交织
-  Transaction A: W_A0 → W_A1 → W_A2
-  Transaction B: W_B0 → W_B1
-
-  正确:
-  W_A0 → W_A1 → W_A2 → W_B0 → W_B1
-  (A 的所有拍先发完，再发 B)
-
-  错误:
-  W_A0 → W_B0 → W_A1 → W_A2 → W_B1
-  (A 和 B 交织，违反协议)
-
-规则 2: 不同事务的 W 拍可以交织 (AXI3 允许, AXI4 不允许)
-  AXI4 限制: W 通道不支持交织
-  AXI3 允许: W_A0 → W_B0 → W_A1 → W_B1
-
-规则 3: 同一 ID 的写响应 B 必须按请求顺序返回
-  不同 ID 的写响应可以乱序返回，接收端通过 BID 匹配事务
-```
-
-```
-WLAST 信号:
-
-WLAST 必须在突发的最后一个数据拍时为高
-
-INCR 突发 (awlen=2, 3 拍):
-  W_VALID:  ────1────1────1────0────
-  W_LAST:   ────0────0────1────0────
-            拍0   拍1   拍2  (结束)
-
-FIXED 突发 (awlen=0, 1 拍):
-  W_VALID:  ────1────0────
-  W_LAST:   ────1────0────
-            唯一一拍
-```
-
-#### AXI4 读重排（Read Reordering）
-
-```
-读重排规则:
-
-规则 1: 同一 ID 的读事务必须按发送顺序返回响应
-  AR_A (ID=0) → AR_B (ID=0) → AR_C (ID=0)
-  必须: R_A → R_B → R_C (保序)
-
-规则 2: 不同 ID 的读事务可以乱序返回
-  AR_A (ID=0) → AR_B (ID=1) → AR_C (ID=2)
-  可以: R_B → R_C → R_A (基于从设备响应速度)
-
-规则 3: 交叉开关可基于 ID 重排响应顺序
-  原因: 不同从设备响应延迟不同
-  DDR 从设备: 50 周期
-  SRAM 从设备: 5 周期
-  → SRAM 的响应先返回，即使 DDR 的 AR 先发送
-```
-
-```
-读重排时序示例:
-
-AR 通道:
-T0: AR_A (ID=0, DDR地址)
-T1: AR_B (ID=1, SRAM地址)
-
-R 通道 (SRAM 先响应):
-T5:  R_B (ID=1, SRAM数据)  ← SRAM 快速响应
-T50: R_A (ID=0, DDR数据)   ← DDR 慢速响应
-
-这是允许的，因为 ID 不同
-```
-
-#### AXI4 窄传输与字节选通（Narrow Transfer）
-
-```
-窄传输原理:
-
-当 `AxSIZE` 指定的单拍字节数小于 AXI 数据总线宽度时，称为窄传输。
-例如在 32 位总线上进行 8 位或 16 位访问。若主从设备的数据总线宽度不同，
-则属于总线宽度转换，通常由 interconnect/width converter 拆分或合并传输。
-
-字节通道映射 (32 位总线):
-字节 0: wstrb[0] → 位 [7:0]
-字节 1: wstrb[1] → 位 [15:8]
-字节 2: wstrb[2] → 位 [23:16]
-字节 3: wstrb[3] → 位 [31:24]
-```
-
-```
-wstrb 示例:
-
-32 位数据总线上的典型写选通:
-  地址低两位为 2'b00 的 8 位写:  wstrb = 4'b0001
-  地址低两位为 2'b01 的 8 位写:  wstrb = 4'b0010
-  地址低两位为 2'b10 的 16 位写: wstrb = 4'b1100
-  对齐的 32 位写:                 wstrb = 4'b1111
-
-WSTRB 为 0 的字节不能被更新。若存储体没有原生字节写使能，从设备内部可能需要
-读-改-写；这不是 AXI Master 必须额外发起的总线读事务。
-```
-
-#### AXI4 WRAP 突发地址计算
-
-```
-WRAP 突发地址计算:
-
-公式:
-  wrap_boundary = (addr / (burst_size × (burst_len + 1))) × (burst_size × (burst_len + 1))
-  lower_wrap = wrap_boundary
-  upper_wrap = wrap_boundary + (burst_size × (burst_len + 1))
-  地址递增到 upper_wrap 时，回到 lower_wrap
-
-示例: awaddr=0x04, awsize=2(4字节), awlen=3(4拍), awburst=WRAP
-  burst_bytes = 4 × 4 = 16 字节
-  wrap_boundary = (0x04 / 16) × 16 = 0x00
-  lower_wrap = 0x00
-  upper_wrap = 0x00 + 16 = 0x10
-
-  地址序列（共 4 拍）:
-  拍 0: 0x04 (起始地址)
-  拍 1: 0x08
-  拍 2: 0x0C
-  拍 3: 0x00 (环绕到 lower_wrap)
-
-用途: 缓存行填充 (Cache Line Fill)
-  CPU 请求地址 0x04，但缓存行大小为 16 字节
-  → WRAP 突发从 0x04 开始，填充整个 0x00-0x0F 范围
-```
-
-#### AXI4 QoS 与 Region
-
-```
-QoS (Quality of Service) 编码:
-
-awqos[3:0] / arqos[3:0]:
-  0000 = 默认值，表示该接口不参与 QoS 方案
-  0001 = 低优先级
-  ...
-  1111 = 高优先级
-
-AXI 建议数值越大优先级越高，但不规定互联必须如何使用 QoS；具体仲裁、带宽保证和
-防饥饿策略属于系统级定义，不能仅凭某类 Master 固定推断 AxQOS 值。
-```
-
-```
-Region 编码:
-
-awregion[3:0] / arregion[3:0]:
-  最多标识同一物理 Slave 接口后的 16 个逻辑区域，可替代一部分高位地址译码
-
-示例:
-  Region 0: 0x0000_0000 - 0x0000_FFFF (SRAM 0)
-  Region 1: 0x0001_0000 - 0x0001_FFFF (SRAM 1)
-  Region 2: 0x0002_0000 - 0x0002_FFFF (SRAM 2)
-
-用途: 一个 Slave 的数据通路与控制寄存器可位于不同系统地址区域，但共用同一物理接口。
-AxREGION 不会创建新的独立地址空间，并且在任意 4KB 地址范围内必须保持不变。
-```
-
-```
-Cache 属性 (awcache/arcache):
-
-AxCACHE[3:0]（AXI4）:
-  [0] = Bufferable (可缓冲)
-  [1] = Modifiable (允许互联拆分、合并或修改事务属性)
-  [3:2] = 缓存查找/分配提示；读写通道的精确含义可能不同
-
-常用非缓存类型:
-  4'b0000 = Device Non-bufferable
-  4'b0001 = Device Bufferable
-  4'b0010 = Normal Non-cacheable Non-bufferable
-  4'b0011 = Normal Non-cacheable Bufferable
-
-缓存型内存的 ARCACHE 与 AWCACHE 可能使用不同编码，不能只用一个笼统的
-“Write-Back/Write-Through”常量同时驱动两个通道；应按所用 AXI 版本的内存类型表配置。
-```
-
-#### valid/ready 反压机制详解
-
-```
-反压 (Backpressure) 原理:
-
-当接收端还没准备好接收数据时，通过拉低 READY 信号反压发送端。
-发送端一旦断言 VALID，就必须保持 VALID 和通道负载不变，直到握手完成。
-
-这是 AXI 总线最核心的流控机制。
-```
-
-```
-正常握手 (无反压):
-
-CLK      ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
-           └──┘  └──┘  └──┘  └──┘
-
-MASTER:
-  AWADDR  ──── 0x1000 ──────────────────
-  AWVALID ─────────1────────0──────────
-  AWREADY ───────────────1──────────────
-                   (从机就绪)
-
-从机在第一个周期就返回 ready → 1 拍完成
-```
-
-```
-从机反压 (从机没准备好):
-
-MASTER:
-  AWADDR  ──── 0x1000 ──────────────────────────
-  AWVALID ─────────1────────────────0───────────
-  AWREADY ───────────────0──────0───1───────────
-                   │      │     │
-                   ▼      ▼     ▼
-              从机没空  还没空  终于好了
-
-关键规则: ready=0 期间，主机的 AWADDR/AWVALID 等信号不能变！
-```
-
-```
-违规示例 (主机在反压期间改了地址):
-
-T0: AWADDR=0x1000, AWVALID=1, AWREADY=0
-T1: AWADDR=0x2000, AWVALID=1, AWREADY=0  ← 违规！
-T2: AWREADY=1
-
-从机在 T2 采样到 AWADDR=0x2000
-→ 从机认为主机要写 0x2000，实际主机想写 0x1000
-→ 数据写到错误地址，系统崩溃
-```
-
-```
-valid/ready 四种状态:
-
-valid │ ready │ 含义
-──────┼───────┼──────────────────────────
-  0   │   0   │ 无事发生，总线空闲
-  0   │   1   │ 接收端就绪但发送端无有效负载（允许）
-  1   │   0   │ 发送端有效但被反压（发送端必须保持）
-  1   │   1   │ 握手完成，数据传输
-
-协议规则:
-- valid=1 后必须保持到 ready=1（不能提前撤销）
-- valid=1 且 ready=0 时，发送端的通道负载必须稳定
-- valid 和 ready 没有固定先后顺序（都可以先断言）
-```
-
-```
-五通道反压示意:
-
-AW 通道: 主机→从机 (写地址)
-  主机发地址，从机反压 → 地址必须保持
-
-W 通道:  主机→从机 (写数据)
-  主机发数据，从机反压 → 数据和 wstrb 必须保持
-
-B 通道:  从机→主机 (写响应)
-  从机发响应，主机反压 → 响应必须保持
-
-AR 通道: 主机→从机 (读地址)
-  主机发地址，从机反压 → 地址必须保持
-
-R 通道:  从机→主机 (读数据)
-  从机发数据，主机反压 → 数据必须保持
-```
-
-```verilog
-// valid/ready 握手断言 (协议检查)
-property handshake_valid_ready;
-    @(posedge aclk) disable iff (!aresetn)
-    (awvalid && !awready) |=>
-        awvalid && $stable({awaddr, awlen, awsize, awburst, awprot});
-endproperty
-
-assert_handshake: assert property(handshake_valid_ready)
-    else $error("Protocol violation: AW changed before handshake");
-```
-
-#### Master/Slave 行为示例
-
-```verilog
-// AXI Master 的 AW 通道：VALID 和地址保持到握手完成
-always_ff @(posedge aclk or negedge aresetn) begin
-    if (!aresetn) begin
-        awvalid <= 1'b0;
-    end else if (!awvalid && start_write) begin
-        awaddr  <= next_write_addr;
-        awvalid <= 1'b1;
-    end else if (awvalid && awready) begin
-        awvalid <= 1'b0;
-    end
-end
-
-// AXI Slave：只在 AWVALID && AWREADY 时接收地址
-assign awready = can_accept_aw;
-always_ff @(posedge aclk) begin
-    if (awvalid && awready)
-        accepted_awaddr <= awaddr;
-end
-```
-
-AW、W、B、AR、R 五个通道都独立使用各自的 VALID/READY；写地址和写数据不能合并成一个通用 `bus.valid/bus.ready` 握手。
-
-#### Master vs Slave 信号对比
-
-| 信号 | Master 产生 | Slave 产生 |
-|---|---|---|
-| `valid` | ✅ | ❌ |
-| `ready` | ❌ | ✅ |
-| `addr` | ✅ | ❌ |
-| `rdata`/`wdata` | 读时等，写时提供 | 读时提供，写时等 |
-
----
-
-### 1.2 AHB 协议
-
-#### AHB 架构
-
-```
-AHB 总线架构:
-
-  ┌─────────┐  ┌─────────┐  ┌─────────┐
-  │ Master 0│  │ Master 1│  │ Master 2│
-  │  (CPU)  │  │  (DMA)  │  │  (DSP)  │
-  └────┬────┘  └────┬────┘  └────┬────┘
-       │HBUSREQ     │HBUSREQ     │HBUSREQ
-       ▼            ▼            ▼
-  ┌─────────────────────────────────────┐
-  │           仲裁器 (Arbiter)          │
-  │  作用：决定哪个 Master 获得总线访问权 │
-  │  输入：HBUSREQ[n]（请求信号）        │
-  │  输出：HGRANT[n]（授权信号）         │
-  └─────────────────────────────────────┘
-                    │HMASTER
-                    ▼
-  ┌─────────────────────────────────────┐
-  │           解码器 (Decoder)          │
-  │  作用：根据地址选中目标 Slave         │
-  │  输入：HADDR（地址总线）             │
-  │  输出：HSEL[n]（从设备片选）         │
-  └─────────────────────────────────────┘
-       │HSEL        │HSEL        │HSEL
-       ▼            ▼            ▼
-  ┌─────────┐  ┌─────────┐  ┌─────────┐
-  │ Slave 0 │  │ Slave 1 │  │ Slave 2 │
-  │  (ROM)  │  │ (SRAM)  │  │ (APB桥) │
-  └─────────┘  └─────────┘  └─────────┘
-```
-
-**工作流程**：Master 请求 → 仲裁器授权 → 发送地址 → 解码器选中 Slave → 数据传输
-
-#### AHB 信号接口
-
-```verilog
-// AHB3-Lite 接口定义
-interface ahb_if #(
-    parameter ADDR_WIDTH = 32,
-    parameter DATA_WIDTH = 32
-)(
-    input  logic HCLK,
-    input  logic HRESETn
-);
-
-    // 全局信号
-    logic [ADDR_WIDTH-1:0]  HADDR;      // 地址总线
-    logic [1:0]             HTRANS;      // 传输类型
-    logic [2:0]             HSIZE;       // 传输大小
-    logic [2:0]             HBURST;      // 突发类型
-    logic [3:0]             HPROT;       // 保护/缓存属性
-    logic                   HMASTLOCK;   // 锁定传输指示
-    logic                   HWRITE;      // 读/写
-    logic [DATA_WIDTH-1:0]  HWDATA;      // 写数据
-    logic [DATA_WIDTH-1:0]  HRDATA;      // 读数据
-    logic                   HRESP;       // AHB-Lite: 0=OKAY, 1=ERROR
-    logic                   HREADY;      // 互联返回给 Master 的全局就绪
-    logic                   HREADYOUT;   // 当前 Slave 输出的就绪
-    logic                   HSEL;        // 片选
-
-    modport master (
-        input  HCLK, HRESETn, HRDATA, HRESP, HREADY,
-        output HADDR, HTRANS, HSIZE, HBURST, HPROT, HMASTLOCK,
-               HWRITE, HWDATA
-    );
-
-    modport slave (
-        input  HCLK, HRESETn, HADDR, HTRANS, HSIZE, HBURST, HPROT,
-               HMASTLOCK, HWRITE, HWDATA, HREADY, HSEL,
-        output HRDATA, HRESP, HREADYOUT
-    );
-
-endinterface
-```
-
-#### AHB 传输类型
-
-| 类型 | `HTRANS` | 说明 |
-|---|---|---|
-| **IDLE** | 2'b00 | 空闲，总线占用但无传输 |
-| **BUSY** | 2'b01 | 主设备暂时无法传输 |
-| **NONSEQ** | 2'b10 | 突发的第一个或单次传输 |
-| **SEQ** | 2'b11 | 突发的后续传输 |
-
-#### AHB 突发类型
-
-| 类型 | `HBURST` | 传输次数 | 地址行为 |
-|---|---|---|---|
-| **SINGLE** | 3'b000 | 1 | - |
-| **INCR** | 3'b001 | 任意 | 递增 |
-| **WRAP4** | 3'b010 | 4 | 环绕 |
-| **INCR4** | 3'b011 | 4 | 递增 |
-| **WRAP8** | 3'b100 | 8 | 环绕 |
-| **INCR8** | 3'b101 | 8 | 递增 |
-| **WRAP16** | 3'b110 | 16 | 环绕 |
-| **INCR16** | 3'b111 | 16 | 递增 |
-
-#### AHB 时序
-
-```
-AHB 读传输时序:
-
-HCLK    ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──
-          └──┘  └──┘  └──┘  └──┘  └──┘
-         ┌────────────┐
-HTRANS   │   NONSEQ   │     SEQ        SEQ
-         └────────────┘──────────────────
-              │
-              ▼
-HADDR    ────A0────────A1────────A2────
-
-HREADY   ──────────1───0───1────────────
-                     │   │
-                     ▼   ▼
-HRDATA   ────────────D0──────D1────────
-```
-
-#### AHB vs AXI 对比
-
-| 特性 | AHB | AXI |
-|---|---|---|
-| **流水线** | 地址阶段与数据阶段重叠 | 五个独立通道并发工作 |
-| **并发传输** | 单一 | 多个同时进行 |
-| **突发长度** | 固定突发最多 16 拍；INCR 可不定长 | AXI4 INCR 最大 256 拍 |
-| **ID 标识** | 无 | 有（支持乱序） |
-| **握手信号** | HREADY | valid/ready |
-| **复杂度** | 低 | 高 |
-| **性能** | 中等 | 高 |
-| **典型应用** | 低速外设、桥接 | DDR、高带宽 |
-
-#### AHB-Lite vs 完整 AHB
-
-```
-AHB-Lite (单主设备):
-
-  ┌─────────┐
-  │ Master  │  (只有 CPU)
-  └────┬────┘
-       │
-       ▼
-  ┌─────────────────────────────────────┐
-  │           解码器 (Decoder)          │  ← 无需仲裁器
-  └─────────────────┬───────────────────┘
-       │            │            │
-       ▼            ▼            ▼
-  ┌─────────┐  ┌─────────┐  ┌─────────┐
-  │ Slave 0 │  │ Slave 1 │  │ Slave 2 │
-  └─────────┘  └─────────┘  └─────────┘
-
-特点: 无 HBUSREQ/HGRANT，HSEL 直接由地址译码产生
-```
-
-```
-完整 AHB (多主设备):
-
-  ┌─────────┐  ┌─────────┐  ┌─────────┐
-  │ Master 0│  │ Master 1│  │ Master 2│
-  │  (CPU)  │  │  (DMA)  │  │  (DSP)  │
-  └────┬────┘  └────┬────┘  └────┬────┘
-       │HBUSREQ     │HBUSREQ     │HBUSREQ
-       ▼            ▼            ▼
-  ┌─────────────────────────────────────┐
-  │           仲裁器 (Arbiter)          │
-  │  ┌─────────────────────────────┐   │
-  │  │  输入: HBUSREQ[2:0]         │   │
-  │  │  输出: HGRANT[2:0], HMASTLOCK│  │
-  │  └─────────────────────────────┘   │
-  └─────────────────┬───────────────────┘
-                    │ HMASTER[3:0]
-                    ▼
-  ┌─────────────────────────────────────┐
-  │           解码器 (Decoder)          │
-  └─────────────────┬───────────────────┘
-       │            │            │
-       ▼            ▼            ▼
-  ┌─────────┐  ┌─────────┐  ┌─────────┐
-  │ Slave 0 │  │ Slave 1 │  │ Slave 2 │
-  └─────────┘  └─────────┘  └─────────┘
-
-新增信号:
-- HBUSREQ[n]: 主设备 n 请求总线
-- HGRANT[n]: 仲裁器授权主设备 n
-- HMASTER[3:0]: 当前占用总线的主设备编号
-- HMASTLOCK: 主设备锁定总线（原子操作）
-```
-
-#### AHB 仲裁机制
-
-```
-固定优先级仲裁:
-
-  优先级: Master 0 > Master 1 > Master 2
-
-  Master 2 请求 ──┐
-  Master 1 请求 ──┤
-  Master 0 请求 ──┤
-                  ▼
-           ┌────────────┐
-           │ 固定优先级  │
-           │   仲裁器   │
-           └──────┬─────┘
-                  │
-                  ▼
-           HGRANT[0] = 1  (M0 有最高优先级，只要请求就获得授权)
-
-特点: 简单但可能饥饿（低优先级主设备永远无法获得总线）
-```
-
-```
-轮询仲裁 (Round-Robin):
-
-  时钟周期:    T0    T1    T2    T3    T4    T5
-  Master 0:   REQ   REQ   REQ   REQ   REQ   REQ
-  Master 1:   REQ   REQ   REQ   REQ   REQ   REQ
-  Master 2:   REQ   REQ   REQ   REQ   REQ   REQ
-  HGRANT:     M0    M1    M2    M0    M1    M2
-
-  授权顺序: M0 → M1 → M2 → M0 → M1 → M2 → ...
-
-特点: 公平，每个主设备轮流获得总线
-```
-
-```
-AHB 仲裁时序:
-
-HCLK    ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──
-          └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘
-
-HBUSREQ ──────────1─────1─────0─────0─────1─────0
-(M0请求)
-
-HBUSREQ ─────1─────1─────1─────1─────1─────1────
-(M1请求)
-
-HGRANT  ──────────0─────0─────1─────1─────0─────0
-         (M0)   (M0)  (M1)  (M1)  (M0)  (M0)
-
-HTRANS   ─────NONSEQ─SEQ───NONSEQ─SEQ───NONSEQ─SEQ
-         M0传输   M0传输  M1传输  M1传输  M0传输
-```
-
-#### AHB Split 传输
-
-```
-Split 传输原理:
-
-当慢速从设备（如 Flash）无法及时响应时:
-1. 从设备通过 HRESP 返回 SPLIT 响应
-2. 仲裁器撤销当前主设备授权
-3. 仲裁器授权其他主设备访问
-4. 慢速从设备完成操作后，通过 HSPLITx 通知仲裁器原 Master 可重新参与仲裁
-5. 仲裁器重新授权原主设备
-
-概念时序:
-1. M0 以 NONSEQ 发起访问。
-2. 从设备返回两周期 SPLIT 响应；仲裁器记录 M0 被 split，并可授权 M1。
-3. 从设备完成内部操作后，断言 HSPLITx[M0]，表示 M0 可以重新参与仲裁。
-4. M0 再次获授权后，必须重新发起原传输；SPLIT 本身并不代表传输已经完成。
-```
-
-注意：以上机制仅适用于完整 AHB。AHB-Lite 是单 Master 子集，HRESP 只有
-OKAY/ERROR，不支持 RETRY、SPLIT、HSPLITx 或总线仲裁。
-
-#### AHB 总线保持协议
-
-```
-HREADY 协议:
-
-规则:
-1. HREADY=1 时，当前数据传输完成
-2. HREADY=0 时，从设备插入等待状态
-3. 等待期间，后续地址/控制和当前写数据保持稳定，流水线整体停顿
-
-HCLK    ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──
-          └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘
-
-         ┌────────────┐
-HTRANS   │   NONSEQ   │     SEQ        SEQ
-         └────────────┘────────────────────────
-
-HADDR    ────A0────────A1────────A2────────A3────
-
-HREADY   ──────────1───0───0───1───1───1────
-                     │   │
-                     ▼   ▼
-HRDATA   ────────────D0──────────────D1────D2────
-                     (等待)          (完成)
-
-HWDATA   ────────────────W0──────────W1────W2────
-         (A1/A0 地址阶段保持)
-```
-
-#### AHB 传输大小与对齐
-
-```
-HSIZE 编码:
-
-HSIZE[2:0]  传输大小    字节 lanes
-─────────────────────────────────
-3'b000      8 位 (1字节)  byte[0] 或 byte[1] 或 byte[2] 或 byte[3]
-3'b001      16 位 (2字节) halfword[0:1] 或 halfword[2:3]
-3'b010      32 位 (4字节) word[0:3]
-3'b011      64 位 (8字节) doubleword[0:7]
-3'b100      128 位        16 字节
-3'b101      256 位        32 字节
-3'b110      512 位        64 字节
-3'b111      1024 位       128 字节
-
-地址对齐规则:
-- 32 位访问: 地址低 2 位必须为 0
-- 16 位访问: 地址低 1 位必须为 0
-- 8 位访问:  地址任意
-```
-
-#### HSEL 与地址解码器详解
-
-```
-HSEL 的作用: 根据主设备发出的地址，选中目标从设备
-
-完整流程:
-步骤 1: 主设备发出地址
-  Master → HADDR = 0x2000_1234
-
-步骤 2: 解码器译码
-  ┌─────────────────────────────────┐
-  │         地址解码器 (Decoder)     │
-  │                                 │
-  │  输入: HADDR = 0x2000_1234     │
-  │                                 │
-  │  规则:                          │
-  │  0x0000_xxxx → HSEL_ROM  = 1  │
-  │  0x2000_xxxx → HSEL_SRAM = 1  │  ← 匹配这条
-  │  0x4000_xxxx → HSEL_APB  = 1  │
-  │                                 │
-  │  输出: HSEL_SRAM = 1           │
-  └─────────────────────────────────┘
-
-步骤 3: SRAM 被选中，开始响应
-  HSEL_SRAM = 1 → SRAM 监听总线并响应
-  HSEL_ROM  = 0 → ROM 忽略总线
-  HSEL_APB  = 0 → APB 忽略总线
-```
-
-```verilog
-// AHB 地址解码器
-module ahb_decoder #(
-    parameter ADDR_WIDTH = 32
-)(
-    input  logic [ADDR_WIDTH-1:0] HADDR,
-    output logic                  HSEL_ROM,
-    output logic                  HSEL_SRAM,
-    output logic                  HSEL_APB
-);
-
-    always_comb begin
-        HSEL_ROM  = 1'b0;
-        HSEL_SRAM = 1'b0;
-        HSEL_APB  = 1'b0;
-
-        casez (HADDR[31:16])
-            16'h0000: HSEL_ROM  = 1'b1;  // 0x0000_0000 - 0x0000_FFFF
-            16'h2000: HSEL_SRAM = 1'b1;  // 0x2000_0000 - 0x2000_FFFF
-            16'h4000: HSEL_APB  = 1'b1;  // 0x4000_0000 - 0x4000_FFFF
-            default:  begin
-                // 无效地址，所有 HSEL 为 0
-                // 解码器不选中任何从设备 → 由 default slave 返回 AHB ERROR
-            end
-        endcase
-    end
-
-endmodule
-```
-
-```
-HSEL 与 HREADY 的关系:
-
-规则: HSEL=0 的从设备必须忽略所有总线信号
-
-HSEL   ───────0────────0────────1────────0────
-HTRANS ──NONSEQ──SEQ──NONSEQ──SEQ──
-HRDATA ──────────────────D0──────────────
-HREADY ──────────────────1──────────────
-
-从设备 0 (HSEL=0): 无响应
-从设备 1 (HSEL=0): 无响应
-从设备 2 (HSEL=1): 提供数据，HREADY=1 表示完成
-
-如果所有 HSEL 都为 0:
-  → default slave 产生 ERROR 响应 (AHB-Lite HRESP=1'b1)
-  → 主设备收到错误响应
-```
-
-```
-4GB 地址空间划分示例:
-
-0x0000_0000 ┌──────────────┐
-            │   ROM        │ 64KB
-0x0000_FFFF ├──────────────┤
-            │   (未使用)    │
-0x1FFF_FFFF ├──────────────┤
-            │   SRAM       │ 64KB
-0x2000_FFFF ├──────────────┤
-            │   (未使用)    │
-0x3FFF_FFFF ├──────────────┤
-            │   APB 外设   │ 64KB
-0x4000_FFFF ├──────────────┤
-            │   ...        │
-
-解码器只需比较高位地址:
-  HADDR[31:16] == 16'h0000 → ROM
-  HADDR[31:16] == 16'h2000 → SRAM
-  HADDR[31:16] == 16'h4000 → APB
-```
-
----
-
-### 1.3 APB 协议
+### 1.1 APB 协议
 
 #### APB 架构
 
@@ -1624,7 +571,1077 @@ endmodule
 
 ---
 
-### 1.4 ACE 协议 (AXI Coherency Extensions)
+### 1.2 AHB/AHB-Lite 协议
+
+#### AHB 架构
+
+```
+AHB 总线架构:
+
+  ┌─────────┐  ┌─────────┐  ┌─────────┐
+  │ Master 0│  │ Master 1│  │ Master 2│
+  │  (CPU)  │  │  (DMA)  │  │  (DSP)  │
+  └────┬────┘  └────┬────┘  └────┬────┘
+       │HBUSREQ     │HBUSREQ     │HBUSREQ
+       ▼            ▼            ▼
+  ┌─────────────────────────────────────┐
+  │           仲裁器 (Arbiter)          │
+  │  作用：决定哪个 Master 获得总线访问权 │
+  │  输入：HBUSREQ[n]（请求信号）        │
+  │  输出：HGRANT[n]（授权信号）         │
+  └─────────────────────────────────────┘
+                    │HMASTER
+                    ▼
+  ┌─────────────────────────────────────┐
+  │           解码器 (Decoder)          │
+  │  作用：根据地址选中目标 Slave         │
+  │  输入：HADDR（地址总线）             │
+  │  输出：HSEL[n]（从设备片选）         │
+  └─────────────────────────────────────┘
+       │HSEL        │HSEL        │HSEL
+       ▼            ▼            ▼
+  ┌─────────┐  ┌─────────┐  ┌─────────┐
+  │ Slave 0 │  │ Slave 1 │  │ Slave 2 │
+  │  (ROM)  │  │ (SRAM)  │  │ (APB桥) │
+  └─────────┘  └─────────┘  └─────────┘
+```
+
+**工作流程**：Master 请求 → 仲裁器授权 → 发送地址 → 解码器选中 Slave → 数据传输
+
+#### AHB 信号接口
+
+```verilog
+// AHB3-Lite 接口定义
+interface ahb_if #(
+    parameter ADDR_WIDTH = 32,
+    parameter DATA_WIDTH = 32
+)(
+    input  logic HCLK,
+    input  logic HRESETn
+);
+
+    // 全局信号
+    logic [ADDR_WIDTH-1:0]  HADDR;      // 地址总线
+    logic [1:0]             HTRANS;      // 传输类型
+    logic [2:0]             HSIZE;       // 传输大小
+    logic [2:0]             HBURST;      // 突发类型
+    logic [3:0]             HPROT;       // 保护/缓存属性
+    logic                   HMASTLOCK;   // 锁定传输指示
+    logic                   HWRITE;      // 读/写
+    logic [DATA_WIDTH-1:0]  HWDATA;      // 写数据
+    logic [DATA_WIDTH-1:0]  HRDATA;      // 读数据
+    logic                   HRESP;       // AHB-Lite: 0=OKAY, 1=ERROR
+    logic                   HREADY;      // 互联返回给 Master 的全局就绪
+    logic                   HREADYOUT;   // 当前 Slave 输出的就绪
+    logic                   HSEL;        // 片选
+
+    modport master (
+        input  HCLK, HRESETn, HRDATA, HRESP, HREADY,
+        output HADDR, HTRANS, HSIZE, HBURST, HPROT, HMASTLOCK,
+               HWRITE, HWDATA
+    );
+
+    modport slave (
+        input  HCLK, HRESETn, HADDR, HTRANS, HSIZE, HBURST, HPROT,
+               HMASTLOCK, HWRITE, HWDATA, HREADY, HSEL,
+        output HRDATA, HRESP, HREADYOUT
+    );
+
+endinterface
+```
+
+#### AHB 传输类型
+
+| 类型 | `HTRANS` | 说明 |
+|---|---|---|
+| **IDLE** | 2'b00 | 空闲，总线占用但无传输 |
+| **BUSY** | 2'b01 | 主设备暂时无法传输 |
+| **NONSEQ** | 2'b10 | 突发的第一个或单次传输 |
+| **SEQ** | 2'b11 | 突发的后续传输 |
+
+#### AHB 突发类型
+
+| 类型 | `HBURST` | 传输次数 | 地址行为 |
+|---|---|---|---|
+| **SINGLE** | 3'b000 | 1 | - |
+| **INCR** | 3'b001 | 任意 | 递增 |
+| **WRAP4** | 3'b010 | 4 | 环绕 |
+| **INCR4** | 3'b011 | 4 | 递增 |
+| **WRAP8** | 3'b100 | 8 | 环绕 |
+| **INCR8** | 3'b101 | 8 | 递增 |
+| **WRAP16** | 3'b110 | 16 | 环绕 |
+| **INCR16** | 3'b111 | 16 | 递增 |
+
+#### AHB 时序
+
+```
+AHB 读传输时序:
+
+HCLK    ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──
+          └──┘  └──┘  └──┘  └──┘  └──┘
+         ┌────────────┐
+HTRANS   │   NONSEQ   │     SEQ        SEQ
+         └────────────┘──────────────────
+              │
+              ▼
+HADDR    ────A0────────A1────────A2────
+
+HREADY   ──────────1───0───1────────────
+                     │   │
+                     ▼   ▼
+HRDATA   ────────────D0──────D1────────
+```
+
+#### AHB vs AXI 对比
+
+| 特性 | AHB | AXI |
+|---|---|---|
+| **流水线** | 地址阶段与数据阶段重叠 | 五个独立通道并发工作 |
+| **并发传输** | 单一 | 多个同时进行 |
+| **突发长度** | 固定突发最多 16 拍；INCR 可不定长 | AXI4 INCR 最大 256 拍 |
+| **ID 标识** | 无 | 有（支持乱序） |
+| **握手信号** | HREADY | valid/ready |
+| **复杂度** | 低 | 高 |
+| **性能** | 中等 | 高 |
+| **典型应用** | 低速外设、桥接 | DDR、高带宽 |
+
+#### AHB-Lite vs 完整 AHB
+
+```
+AHB-Lite (单主设备):
+
+  ┌─────────┐
+  │ Master  │  (只有 CPU)
+  └────┬────┘
+       │
+       ▼
+  ┌─────────────────────────────────────┐
+  │           解码器 (Decoder)          │  ← 无需仲裁器
+  └─────────────────┬───────────────────┘
+       │            │            │
+       ▼            ▼            ▼
+  ┌─────────┐  ┌─────────┐  ┌─────────┐
+  │ Slave 0 │  │ Slave 1 │  │ Slave 2 │
+  └─────────┘  └─────────┘  └─────────┘
+
+特点: 无 HBUSREQ/HGRANT，HSEL 直接由地址译码产生
+```
+
+```
+完整 AHB (多主设备):
+
+  ┌─────────┐  ┌─────────┐  ┌─────────┐
+  │ Master 0│  │ Master 1│  │ Master 2│
+  │  (CPU)  │  │  (DMA)  │  │  (DSP)  │
+  └────┬────┘  └────┬────┘  └────┬────┘
+       │HBUSREQ     │HBUSREQ     │HBUSREQ
+       ▼            ▼            ▼
+  ┌─────────────────────────────────────┐
+  │           仲裁器 (Arbiter)          │
+  │  ┌─────────────────────────────┐   │
+  │  │  输入: HBUSREQ[2:0]         │   │
+  │  │  输出: HGRANT[2:0], HMASTLOCK│  │
+  │  └─────────────────────────────┘   │
+  └─────────────────┬───────────────────┘
+                    │ HMASTER[3:0]
+                    ▼
+  ┌─────────────────────────────────────┐
+  │           解码器 (Decoder)          │
+  └─────────────────┬───────────────────┘
+       │            │            │
+       ▼            ▼            ▼
+  ┌─────────┐  ┌─────────┐  ┌─────────┐
+  │ Slave 0 │  │ Slave 1 │  │ Slave 2 │
+  └─────────┘  └─────────┘  └─────────┘
+
+新增信号:
+- HBUSREQ[n]: 主设备 n 请求总线
+- HGRANT[n]: 仲裁器授权主设备 n
+- HMASTER[3:0]: 当前占用总线的主设备编号
+- HMASTLOCK: 主设备锁定总线（原子操作）
+```
+
+#### AHB 仲裁机制
+
+```
+固定优先级仲裁:
+
+  优先级: Master 0 > Master 1 > Master 2
+
+  Master 2 请求 ──┐
+  Master 1 请求 ──┤
+  Master 0 请求 ──┤
+                  ▼
+           ┌────────────┐
+           │ 固定优先级  │
+           │   仲裁器   │
+           └──────┬─────┘
+                  │
+                  ▼
+           HGRANT[0] = 1  (M0 有最高优先级，只要请求就获得授权)
+
+特点: 简单但可能饥饿（低优先级主设备永远无法获得总线）
+```
+
+```
+轮询仲裁 (Round-Robin):
+
+  时钟周期:    T0    T1    T2    T3    T4    T5
+  Master 0:   REQ   REQ   REQ   REQ   REQ   REQ
+  Master 1:   REQ   REQ   REQ   REQ   REQ   REQ
+  Master 2:   REQ   REQ   REQ   REQ   REQ   REQ
+  HGRANT:     M0    M1    M2    M0    M1    M2
+
+  授权顺序: M0 → M1 → M2 → M0 → M1 → M2 → ...
+
+特点: 公平，每个主设备轮流获得总线
+```
+
+```
+AHB 仲裁时序:
+
+HCLK    ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──
+          └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘
+
+HBUSREQ ──────────1─────1─────0─────0─────1─────0
+(M0请求)
+
+HBUSREQ ─────1─────1─────1─────1─────1─────1────
+(M1请求)
+
+HGRANT  ──────────0─────0─────1─────1─────0─────0
+         (M0)   (M0)  (M1)  (M1)  (M0)  (M0)
+
+HTRANS   ─────NONSEQ─SEQ───NONSEQ─SEQ───NONSEQ─SEQ
+         M0传输   M0传输  M1传输  M1传输  M0传输
+```
+
+#### AHB Split 传输
+
+```
+Split 传输原理:
+
+当慢速从设备（如 Flash）无法及时响应时:
+1. 从设备通过 HRESP 返回 SPLIT 响应
+2. 仲裁器撤销当前主设备授权
+3. 仲裁器授权其他主设备访问
+4. 慢速从设备完成操作后，通过 HSPLITx 通知仲裁器原 Master 可重新参与仲裁
+5. 仲裁器重新授权原主设备
+
+概念时序:
+1. M0 以 NONSEQ 发起访问。
+2. 从设备返回两周期 SPLIT 响应；仲裁器记录 M0 被 split，并可授权 M1。
+3. 从设备完成内部操作后，断言 HSPLITx[M0]，表示 M0 可以重新参与仲裁。
+4. M0 再次获授权后，必须重新发起原传输；SPLIT 本身并不代表传输已经完成。
+```
+
+注意：以上机制仅适用于完整 AHB。AHB-Lite 是单 Master 子集，HRESP 只有
+OKAY/ERROR，不支持 RETRY、SPLIT、HSPLITx 或总线仲裁。
+
+#### AHB 总线保持协议
+
+```
+HREADY 协议:
+
+规则:
+1. HREADY=1 时，当前数据传输完成
+2. HREADY=0 时，从设备插入等待状态
+3. 等待期间，后续地址/控制和当前写数据保持稳定，流水线整体停顿
+
+HCLK    ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐  ┌──
+          └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘  └──┘
+
+         ┌────────────┐
+HTRANS   │   NONSEQ   │     SEQ        SEQ
+         └────────────┘────────────────────────
+
+HADDR    ────A0────────A1────────A2────────A3────
+
+HREADY   ──────────1───0───0───1───1───1────
+                     │   │
+                     ▼   ▼
+HRDATA   ────────────D0──────────────D1────D2────
+                     (等待)          (完成)
+
+HWDATA   ────────────────W0──────────W1────W2────
+         (A1/A0 地址阶段保持)
+```
+
+#### AHB 传输大小与对齐
+
+```
+HSIZE 编码:
+
+HSIZE[2:0]  传输大小    字节 lanes
+─────────────────────────────────
+3'b000      8 位 (1字节)  byte[0] 或 byte[1] 或 byte[2] 或 byte[3]
+3'b001      16 位 (2字节) halfword[0:1] 或 halfword[2:3]
+3'b010      32 位 (4字节) word[0:3]
+3'b011      64 位 (8字节) doubleword[0:7]
+3'b100      128 位        16 字节
+3'b101      256 位        32 字节
+3'b110      512 位        64 字节
+3'b111      1024 位       128 字节
+
+地址对齐规则:
+- 32 位访问: 地址低 2 位必须为 0
+- 16 位访问: 地址低 1 位必须为 0
+- 8 位访问:  地址任意
+```
+
+#### HSEL 与地址解码器详解
+
+```
+HSEL 的作用: 根据主设备发出的地址，选中目标从设备
+
+完整流程:
+步骤 1: 主设备发出地址
+  Master → HADDR = 0x2000_1234
+
+步骤 2: 解码器译码
+  ┌─────────────────────────────────┐
+  │         地址解码器 (Decoder)     │
+  │                                 │
+  │  输入: HADDR = 0x2000_1234     │
+  │                                 │
+  │  规则:                          │
+  │  0x0000_xxxx → HSEL_ROM  = 1  │
+  │  0x2000_xxxx → HSEL_SRAM = 1  │  ← 匹配这条
+  │  0x4000_xxxx → HSEL_APB  = 1  │
+  │                                 │
+  │  输出: HSEL_SRAM = 1           │
+  └─────────────────────────────────┘
+
+步骤 3: SRAM 被选中，开始响应
+  HSEL_SRAM = 1 → SRAM 监听总线并响应
+  HSEL_ROM  = 0 → ROM 忽略总线
+  HSEL_APB  = 0 → APB 忽略总线
+```
+
+```verilog
+// AHB 地址解码器
+module ahb_decoder #(
+    parameter ADDR_WIDTH = 32
+)(
+    input  logic [ADDR_WIDTH-1:0] HADDR,
+    output logic                  HSEL_ROM,
+    output logic                  HSEL_SRAM,
+    output logic                  HSEL_APB
+);
+
+    always_comb begin
+        HSEL_ROM  = 1'b0;
+        HSEL_SRAM = 1'b0;
+        HSEL_APB  = 1'b0;
+
+        casez (HADDR[31:16])
+            16'h0000: HSEL_ROM  = 1'b1;  // 0x0000_0000 - 0x0000_FFFF
+            16'h2000: HSEL_SRAM = 1'b1;  // 0x2000_0000 - 0x2000_FFFF
+            16'h4000: HSEL_APB  = 1'b1;  // 0x4000_0000 - 0x4000_FFFF
+            default:  begin
+                // 无效地址，所有 HSEL 为 0
+                // 解码器不选中任何从设备 → 由 default slave 返回 AHB ERROR
+            end
+        endcase
+    end
+
+endmodule
+```
+
+```
+HSEL 与 HREADY 的关系:
+
+规则: HSEL=0 的从设备必须忽略所有总线信号
+
+HSEL   ───────0────────0────────1────────0────
+HTRANS ──NONSEQ──SEQ──NONSEQ──SEQ──
+HRDATA ──────────────────D0──────────────
+HREADY ──────────────────1──────────────
+
+从设备 0 (HSEL=0): 无响应
+从设备 1 (HSEL=0): 无响应
+从设备 2 (HSEL=1): 提供数据，HREADY=1 表示完成
+
+如果所有 HSEL 都为 0:
+  → default slave 产生 ERROR 响应 (AHB-Lite HRESP=1'b1)
+  → 主设备收到错误响应
+```
+
+```
+4GB 地址空间划分示例:
+
+0x0000_0000 ┌──────────────┐
+            │   ROM        │ 64KB
+0x0000_FFFF ├──────────────┤
+            │   (未使用)    │
+0x1FFF_FFFF ├──────────────┤
+            │   SRAM       │ 64KB
+0x2000_FFFF ├──────────────┤
+            │   (未使用)    │
+0x3FFF_FFFF ├──────────────┤
+            │   APB 外设   │ 64KB
+0x4000_FFFF ├──────────────┤
+            │   ...        │
+
+解码器只需比较高位地址:
+  HADDR[31:16] == 16'h0000 → ROM
+  HADDR[31:16] == 16'h2000 → SRAM
+  HADDR[31:16] == 16'h4000 → APB
+```
+
+---
+
+### 1.3 AXI4-Lite 协议
+
+AXI4-Lite 保留 AXI 的五个独立通道和 `VALID/READY` 握手，但不支持 Burst、事务 ID 和乱序完成，常用于寄存器配置。先掌握它，再学习完整 AXI4 会更容易。
+
+```verilog
+// AXI4-Lite 信号（无突发、无 ID）
+interface axi4_lite_if #(
+    parameter ADDR_WIDTH = 32,
+    parameter DATA_WIDTH = 32
+)(
+    input  logic aclk,
+    input  logic aresetn
+);
+
+    // 写地址通道 (无 awlen/awsize/awburst)
+    logic [ADDR_WIDTH-1:0]  awaddr;
+    logic [2:0]             awprot;
+    logic                   awvalid;
+    logic                   awready;
+
+    // 写数据通道；WSTRB 是 AXI4-Lite 的标准信号
+    logic [DATA_WIDTH-1:0]  wdata;
+    logic [DATA_WIDTH/8-1:0] wstrb;
+    logic                   wvalid;
+    logic                   wready;
+
+    // 写响应通道 (无 bid)
+    logic [1:0]             bresp;
+    logic                   bvalid;
+    logic                   bready;
+
+    // 读地址通道 (无 arlen/arsize/arburst)
+    logic [ADDR_WIDTH-1:0]  araddr;
+    logic [2:0]             arprot;
+    logic                   arvalid;
+    logic                   arready;
+
+    // 读数据通道 (无 rid/rlast)
+    logic [DATA_WIDTH-1:0]  rdata;
+    logic [1:0]             rresp;
+    logic                   rvalid;
+    logic                   rready;
+
+    modport master (
+        input  aclk, aresetn, awready, wready, bresp, bvalid,
+               arready, rdata, rresp, rvalid,
+        output awaddr, awprot, awvalid, wdata, wstrb, wvalid, bready,
+               araddr, arprot, arvalid, rready
+    );
+
+    modport slave (
+        input  aclk, aresetn, awaddr, awprot, awvalid, wdata, wstrb,
+               wvalid, bready, araddr, arprot, arvalid, rready,
+        output awready, wready, bresp, bvalid, arready, rdata, rresp, rvalid
+    );
+
+endinterface
+```
+
+---
+
+### 1.4 AXI4 协议
+
+#### 架构特点
+
+```
+AXI4 架构:
+┌─────────────────────────────────────────────────────────────┐
+│                      AXI4 Interconnect                      │
+├─────────────────────────────────────────────────────────────┤
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
+│  │ Master 0 │    │ Master 1 │    │ Master 2 │               │
+│  │  (CPU)   │    │  (DMA)   │    │  (GPU)   │               │
+│  └────┬─────┘    └────┬─────┘    └────┬─────┘               │
+│       │               │               │                     │
+│       ▼               ▼               ▼                     │
+│  ┌─────────────────────────────────────────────┐            │
+│  │              Crossbar Switch                │            │
+│  │           (交叉开关/互联矩阵)                 │           │
+│  └─────────────────────────────────────────────┘            │
+│       │               │               │                     │
+│       ▼               ▼               ▼                     │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
+│  │ Slave 0  │    │ Slave 1  │    │ Slave 2  │               │
+│  │  (DDR)   │    │  (SRAM)  │    │  (APB)   │               │
+│  └──────────┘    └──────────┘    └──────────┘               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 五个独立通道
+
+| 通道 | 名称 | 方向 | 功能 |
+|---|---|---|---|
+| **AW** | Write Address | Master→Slave | 写地址+控制 |
+| **W** | Write Data | Master→Slave | 写数据 |
+| **B** | Write Response | Slave→Master | 写完成响应 |
+| **AR** | Read Address | Master→Slave | 读地址+控制 |
+| **R** | Read Data | Slave→Master | 读数据+响应 |
+
+#### AXI4 信号接口
+
+```verilog
+// AXI4 完整接口定义
+interface axi4_if #(
+    parameter ADDR_WIDTH = 32,
+    parameter DATA_WIDTH = 64,
+    parameter ID_WIDTH   = 4
+)(
+    input  logic aclk,
+    input  logic aresetn
+);
+
+    // 写地址通道 (AW)
+    logic [ID_WIDTH-1:0]    awid;
+    logic [ADDR_WIDTH-1:0]  awaddr;
+    logic [7:0]             awlen;      // 突发长度 (0-255)
+    logic [2:0]             awsize;     // 突发大小
+    logic [1:0]             awburst;    // 突发类型
+    logic                   awlock;     // 锁定类型
+    logic [3:0]             awcache;    // 缓存属性
+    logic [2:0]             awprot;     // 保护属性
+    logic [3:0]             awqos;      // QoS 标识
+    logic [3:0]             awregion;
+    logic [3:0]             awuser;
+    logic                   awvalid;
+    logic                   awready;
+
+    // 写数据通道 (W)
+    logic [DATA_WIDTH-1:0]  wdata;
+    logic [DATA_WIDTH/8-1:0] wstrb;    // 字节选通
+    logic                   wlast;      // 最后一个数据
+    logic [3:0]             wuser;
+    logic                   wvalid;
+    logic                   wready;
+
+    // 写响应通道 (B)
+    logic [ID_WIDTH-1:0]    bid;
+    logic [1:0]             bresp;      // 响应码
+    logic [3:0]             buser;
+    logic                   bvalid;
+    logic                   bready;
+
+    // 读地址通道 (AR)
+    logic [ID_WIDTH-1:0]    arid;
+    logic [ADDR_WIDTH-1:0]  araddr;
+    logic [7:0]             arlen;
+    logic [2:0]             arsize;
+    logic [1:0]             arburst;
+    logic                   arlock;
+    logic [3:0]             arcache;
+    logic [2:0]             arprot;
+    logic [3:0]             arqos;
+    logic [3:0]             arregion;
+    logic [3:0]             aruser;
+    logic                   arvalid;
+    logic                   arready;
+
+    // 读数据通道 (R)
+    logic [ID_WIDTH-1:0]    rid;
+    logic [DATA_WIDTH-1:0]  rdata;
+    logic [1:0]             rresp;
+    logic                   rlast;
+    logic [3:0]             ruser;
+    logic                   rvalid;
+    logic                   rready;
+
+    modport master (
+        input  aclk, aresetn, awready, wready, bid, bresp, buser, bvalid,
+               arready, rid, rdata, rresp, rlast, ruser, rvalid,
+        output awid, awaddr, awlen, awsize, awburst, awlock, awcache,
+               awprot, awqos, awregion, awuser, awvalid,
+               wdata, wstrb, wlast, wuser, wvalid, bready,
+               arid, araddr, arlen, arsize, arburst, arlock, arcache,
+               arprot, arqos, arregion, aruser, arvalid, rready
+    );
+
+    modport slave (
+        input  aclk, aresetn, awid, awaddr, awlen, awsize, awburst, awlock,
+               awcache, awprot, awqos, awregion, awuser, awvalid,
+               wdata, wstrb, wlast, wuser, wvalid, bready,
+               arid, araddr, arlen, arsize, arburst, arlock, arcache,
+               arprot, arqos, arregion, aruser, arvalid, rready,
+        output awready, wready, bid, bresp, buser, bvalid,
+               arready, rid, rdata, rresp, rlast, ruser, rvalid
+    );
+
+endinterface
+```
+
+#### AXI4 Burst 传输
+
+```
+AXI4 单个三拍写突发时序 (INCR 类型，AWLEN=2):
+
+         ┌─────┐     ┌─────┐     ┌─────┐
+AW_VALID │     │
+         └─────┘
+              │
+              ▼
+AW_ADDR  ────A0────────────────────────────
+
+         ┌─────┐     ┌─────┐     ┌─────┐
+W_VALID  │     │     │     │     │     │
+         └─────┘     └─────┘     └─────┘
+              │           │           │
+              ▼           ▼           ▼
+W_DATA   ────D0──────────D1──────────D2────
+          W_LAST=0    W_LAST=0    W_LAST=1
+
+         ┌─────┐
+B_VALID  │     │
+         └─────┘
+              │
+              ▼
+B_RESP   ────OKAY────
+```
+
+#### AXI4 突发类型
+
+| 类型 | `awburst` | 地址行为 | 用途 |
+|---|---|---|---|
+| **FIXED** | 2'b00 | 地址不变 | FIFO 访问 |
+| **INCR** | 2'b01 | 地址递增 | 顺序访问（最常用） |
+| **WRAP** | 2'b10 | 地址环绕 | 缓存行填充 |
+
+#### AXI4 响应码
+
+| 响应码 | 含义 | 说明 |
+|---|---|---|
+| `2'b00` (OKAY) | 正常访问 | 成功完成 |
+| `2'b01` (EXOKAY) | 独占访问成功 | 原子操作 |
+| `2'b10` (SLVERR) | 从设备错误 | 地址有效但从设备出错 |
+| `2'b11` (DECERR) | 解码错误 | 地址无效，无从设备匹配 |
+
+#### AXI4 vs AXI4-Lite vs AXI4-Stream
+
+| 特性 | AXI4 | AXI4-Lite | AXI4-Stream |
+|---|---|---|---|
+| **突发传输** | 支持 FIXED/INCR/WRAP | 不支持 | 连续流，不使用 AxBURST |
+| **地址** | 有 | 有 | 无 |
+| **ID 标识** | 有 | 无 | 可选 TID；另有可选 TDEST |
+| **字节选通** | WSTRB | WSTRB | 可选 TKEEP/TSTRB |
+| **数据宽度** | 8/16/32/64/128/256/512/1024 | 32/64 | 任意 |
+| **典型应用** | DDR、SRAM、高带宽 | 寄存器配置 | 视频流、DSP |
+
+#### Outstanding 事务机制
+
+```
+Outstanding 事务原理:
+
+主设备发送地址后，不必等待数据响应即可发送下一个地址
+这种"流水线"方式可以隐藏从设备的访问延迟
+
+时间线示例 (Outstanding 深度 = 4):
+
+时钟:    T0   T1   T2   T3   T4   T5   T6   T7   T8
+         │    │    │    │    │    │    │    │    │
+Master:  A0   A1   A2   A3   ─    ─    ─    ─    ─
+         │         │         │         │
+         ▼         ▼         ▼         ▼
+Slave:   ─    ─    ─    ─    D0   D1   D2   D3   ─
+                                 (从设备响应)
+
+没有 Outstanding (每笔事务等待完成):
+T0: A0 → T3: D0 → T4: A1 → T7: D1 → T8: A2 ...
+总延迟 = 4笔 × 4周期 = 16 周期
+
+有 Outstanding (深度=4):
+T0: A0, T1: A1, T2: A2, T3: A3 → T4: D0, T5: D1, T6: D2, T7: D3
+总延迟 = 4 + 4 = 8 周期 (节省 50%)
+```
+
+```
+Outstanding 深度选择:
+
+深度 = 1:  无流水，每笔事务独立完成
+           优点: 无乱序风险
+           缺点: 延迟大
+
+深度 = 2:  可流水 2 笔事务
+           优点: 简单，适合中速外设
+           缺点: 性能提升有限
+
+深度 = 4-8: 常用于 DDR 控制器
+           优点: 充分利用 DDR 的流水线
+           缺点: 需要更大的 ID 缓冲
+
+深度 = 16+: 用于高性能 SoC 核心互联
+           优点: 最大化带宽利用率
+           缺点: 面积和功耗代价
+```
+
+#### AXI4 交叉开关互联详解
+
+```
+3×3 全交叉开关内部结构:
+
+          M0        M1        M2
+          │         │         │
+          ▼         ▼         ▼
+       ┌──────┐ ┌──────┐ ┌──────┐
+       │ ARB0 │ │ ARB1 │ │ ARB2 │  ← 每个 Slave 端口有仲裁器
+       └──┬───┘ └──┬───┘ └──┬───┘
+          │        │        │
+     ┌────┴────┬───┴────┬───┴────┐
+     │         │        │        │
+     ▼         ▼        ▼        ▼
+  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
+  │SW_00 │ │SW_10 │ │SW_20 │ │ ...  │  ← 每个交叉点有开关
+  │SW_01 │ │SW_11 │ │SW_21 │ │      │
+  │SW_02 │ │SW_12 │ │SW_22 │ │      │
+  └──────┘ └──────┘ └──────┘ └──────┘
+     │         │        │
+     ▼         ▼        ▼
+   S0(DDR)  S1(SRAM)  S2(APB)
+
+每个开关 SW_ij 控制 Master i 到 Slave j 的连接
+仲裁器 ARB_j 决定哪个 Master 可以访问 Slave j
+```
+
+```
+交叉开关连接矩阵:
+
+Master\Slave  │  S0(DDR)  │  S1(SRAM)  │  S2(APB)
+──────────────┼───────────┼────────────┼──────────
+M0 (CPU)      │     ●     │     ●      │     ●
+M1 (DMA)      │     ●     │     ●      │     ●
+M2 (GPU)      │     ●     │     ○      │     ●
+
+● = 可访问   ○ = 不可访问 (稀疏交叉开关)
+
+Full Crossbar: 所有交叉点都有开关，面积 O(M×S)
+Sparse Crossbar: 只在需要的交叉点有开关，面积 < O(M×S)
+```
+
+#### AXI4 写交织（Write Interleaving）
+
+```
+写交织规则:
+
+规则 1: 同一写事务的所有 W 拍不能交织
+  Transaction A: W_A0 → W_A1 → W_A2
+  Transaction B: W_B0 → W_B1
+
+  正确:
+  W_A0 → W_A1 → W_A2 → W_B0 → W_B1
+  (A 的所有拍先发完，再发 B)
+
+  错误:
+  W_A0 → W_B0 → W_A1 → W_A2 → W_B1
+  (A 和 B 交织，违反协议)
+
+规则 2: 不同事务的 W 拍可以交织 (AXI3 允许, AXI4 不允许)
+  AXI4 限制: W 通道不支持交织
+  AXI3 允许: W_A0 → W_B0 → W_A1 → W_B1
+
+规则 3: 同一 ID 的写响应 B 必须按请求顺序返回
+  不同 ID 的写响应可以乱序返回，接收端通过 BID 匹配事务
+```
+
+```
+WLAST 信号:
+
+WLAST 必须在突发的最后一个数据拍时为高
+
+INCR 突发 (awlen=2, 3 拍):
+  W_VALID:  ────1────1────1────0────
+  W_LAST:   ────0────0────1────0────
+            拍0   拍1   拍2  (结束)
+
+FIXED 突发 (awlen=0, 1 拍):
+  W_VALID:  ────1────0────
+  W_LAST:   ────1────0────
+            唯一一拍
+```
+
+#### AXI4 读重排（Read Reordering）
+
+```
+读重排规则:
+
+规则 1: 同一 ID 的读事务必须按发送顺序返回响应
+  AR_A (ID=0) → AR_B (ID=0) → AR_C (ID=0)
+  必须: R_A → R_B → R_C (保序)
+
+规则 2: 不同 ID 的读事务可以乱序返回
+  AR_A (ID=0) → AR_B (ID=1) → AR_C (ID=2)
+  可以: R_B → R_C → R_A (基于从设备响应速度)
+
+规则 3: 交叉开关可基于 ID 重排响应顺序
+  原因: 不同从设备响应延迟不同
+  DDR 从设备: 50 周期
+  SRAM 从设备: 5 周期
+  → SRAM 的响应先返回，即使 DDR 的 AR 先发送
+```
+
+```
+读重排时序示例:
+
+AR 通道:
+T0: AR_A (ID=0, DDR地址)
+T1: AR_B (ID=1, SRAM地址)
+
+R 通道 (SRAM 先响应):
+T5:  R_B (ID=1, SRAM数据)  ← SRAM 快速响应
+T50: R_A (ID=0, DDR数据)   ← DDR 慢速响应
+
+这是允许的，因为 ID 不同
+```
+
+#### AXI4 窄传输与字节选通（Narrow Transfer）
+
+```
+窄传输原理:
+
+当 `AxSIZE` 指定的单拍字节数小于 AXI 数据总线宽度时，称为窄传输。
+例如在 32 位总线上进行 8 位或 16 位访问。若主从设备的数据总线宽度不同，
+则属于总线宽度转换，通常由 interconnect/width converter 拆分或合并传输。
+
+字节通道映射 (32 位总线):
+字节 0: wstrb[0] → 位 [7:0]
+字节 1: wstrb[1] → 位 [15:8]
+字节 2: wstrb[2] → 位 [23:16]
+字节 3: wstrb[3] → 位 [31:24]
+```
+
+```
+wstrb 示例:
+
+32 位数据总线上的典型写选通:
+  地址低两位为 2'b00 的 8 位写:  wstrb = 4'b0001
+  地址低两位为 2'b01 的 8 位写:  wstrb = 4'b0010
+  地址低两位为 2'b10 的 16 位写: wstrb = 4'b1100
+  对齐的 32 位写:                 wstrb = 4'b1111
+
+WSTRB 为 0 的字节不能被更新。若存储体没有原生字节写使能，从设备内部可能需要
+读-改-写；这不是 AXI Master 必须额外发起的总线读事务。
+```
+
+#### AXI4 WRAP 突发地址计算
+
+```
+WRAP 突发地址计算:
+
+公式:
+  wrap_boundary = (addr / (burst_size × (burst_len + 1))) × (burst_size × (burst_len + 1))
+  lower_wrap = wrap_boundary
+  upper_wrap = wrap_boundary + (burst_size × (burst_len + 1))
+  地址递增到 upper_wrap 时，回到 lower_wrap
+
+示例: awaddr=0x04, awsize=2(4字节), awlen=3(4拍), awburst=WRAP
+  burst_bytes = 4 × 4 = 16 字节
+  wrap_boundary = (0x04 / 16) × 16 = 0x00
+  lower_wrap = 0x00
+  upper_wrap = 0x00 + 16 = 0x10
+
+  地址序列（共 4 拍）:
+  拍 0: 0x04 (起始地址)
+  拍 1: 0x08
+  拍 2: 0x0C
+  拍 3: 0x00 (环绕到 lower_wrap)
+
+用途: 缓存行填充 (Cache Line Fill)
+  CPU 请求地址 0x04，但缓存行大小为 16 字节
+  → WRAP 突发从 0x04 开始，填充整个 0x00-0x0F 范围
+```
+
+#### AXI4 QoS 与 Region
+
+```
+QoS (Quality of Service) 编码:
+
+awqos[3:0] / arqos[3:0]:
+  0000 = 默认值，表示该接口不参与 QoS 方案
+  0001 = 低优先级
+  ...
+  1111 = 高优先级
+
+AXI 建议数值越大优先级越高，但不规定互联必须如何使用 QoS；具体仲裁、带宽保证和
+防饥饿策略属于系统级定义，不能仅凭某类 Master 固定推断 AxQOS 值。
+```
+
+```
+Region 编码:
+
+awregion[3:0] / arregion[3:0]:
+  最多标识同一物理 Slave 接口后的 16 个逻辑区域，可替代一部分高位地址译码
+
+示例:
+  Region 0: 0x0000_0000 - 0x0000_FFFF (SRAM 0)
+  Region 1: 0x0001_0000 - 0x0001_FFFF (SRAM 1)
+  Region 2: 0x0002_0000 - 0x0002_FFFF (SRAM 2)
+
+用途: 一个 Slave 的数据通路与控制寄存器可位于不同系统地址区域，但共用同一物理接口。
+AxREGION 不会创建新的独立地址空间，并且在任意 4KB 地址范围内必须保持不变。
+```
+
+```
+Cache 属性 (awcache/arcache):
+
+AxCACHE[3:0]（AXI4）:
+  [0] = Bufferable (可缓冲)
+  [1] = Modifiable (允许互联拆分、合并或修改事务属性)
+  [3:2] = 缓存查找/分配提示；读写通道的精确含义可能不同
+
+常用非缓存类型:
+  4'b0000 = Device Non-bufferable
+  4'b0001 = Device Bufferable
+  4'b0010 = Normal Non-cacheable Non-bufferable
+  4'b0011 = Normal Non-cacheable Bufferable
+
+缓存型内存的 ARCACHE 与 AWCACHE 可能使用不同编码，不能只用一个笼统的
+“Write-Back/Write-Through”常量同时驱动两个通道；应按所用 AXI 版本的内存类型表配置。
+```
+
+#### valid/ready 反压机制详解
+
+```
+反压 (Backpressure) 原理:
+
+当接收端还没准备好接收数据时，通过拉低 READY 信号反压发送端。
+发送端一旦断言 VALID，就必须保持 VALID 和通道负载不变，直到握手完成。
+
+这是 AXI 总线最核心的流控机制。
+```
+
+```
+正常握手 (无反压):
+
+CLK      ──┐  ┌──┐  ┌──┐  ┌──┐  ┌──┐
+           └──┘  └──┘  └──┘  └──┘
+
+MASTER:
+  AWADDR  ──── 0x1000 ──────────────────
+  AWVALID ─────────1────────0──────────
+  AWREADY ───────────────1──────────────
+                   (从机就绪)
+
+从机在第一个周期就返回 ready → 1 拍完成
+```
+
+```
+从机反压 (从机没准备好):
+
+MASTER:
+  AWADDR  ──── 0x1000 ──────────────────────────
+  AWVALID ─────────1────────────────0───────────
+  AWREADY ───────────────0──────0───1───────────
+                   │      │     │
+                   ▼      ▼     ▼
+              从机没空  还没空  终于好了
+
+关键规则: ready=0 期间，主机的 AWADDR/AWVALID 等信号不能变！
+```
+
+```
+违规示例 (主机在反压期间改了地址):
+
+T0: AWADDR=0x1000, AWVALID=1, AWREADY=0
+T1: AWADDR=0x2000, AWVALID=1, AWREADY=0  ← 违规！
+T2: AWREADY=1
+
+从机在 T2 采样到 AWADDR=0x2000
+→ 从机认为主机要写 0x2000，实际主机想写 0x1000
+→ 数据写到错误地址，系统崩溃
+```
+
+```
+valid/ready 四种状态:
+
+valid │ ready │ 含义
+──────┼───────┼──────────────────────────
+  0   │   0   │ 无事发生，总线空闲
+  0   │   1   │ 接收端就绪但发送端无有效负载（允许）
+  1   │   0   │ 发送端有效但被反压（发送端必须保持）
+  1   │   1   │ 握手完成，数据传输
+
+协议规则:
+- valid=1 后必须保持到 ready=1（不能提前撤销）
+- valid=1 且 ready=0 时，发送端的通道负载必须稳定
+- valid 和 ready 没有固定先后顺序（都可以先断言）
+```
+
+```
+五通道反压示意:
+
+AW 通道: 主机→从机 (写地址)
+  主机发地址，从机反压 → 地址必须保持
+
+W 通道:  主机→从机 (写数据)
+  主机发数据，从机反压 → 数据和 wstrb 必须保持
+
+B 通道:  从机→主机 (写响应)
+  从机发响应，主机反压 → 响应必须保持
+
+AR 通道: 主机→从机 (读地址)
+  主机发地址，从机反压 → 地址必须保持
+
+R 通道:  从机→主机 (读数据)
+  从机发数据，主机反压 → 数据必须保持
+```
+
+```verilog
+// valid/ready 握手断言 (协议检查)
+property handshake_valid_ready;
+    @(posedge aclk) disable iff (!aresetn)
+    (awvalid && !awready) |=>
+        awvalid && $stable({awaddr, awlen, awsize, awburst, awprot});
+endproperty
+
+assert_handshake: assert property(handshake_valid_ready)
+    else $error("Protocol violation: AW changed before handshake");
+```
+
+#### Master/Slave 行为示例
+
+```verilog
+// AXI Master 的 AW 通道：VALID 和地址保持到握手完成
+always_ff @(posedge aclk or negedge aresetn) begin
+    if (!aresetn) begin
+        awvalid <= 1'b0;
+    end else if (!awvalid && start_write) begin
+        awaddr  <= next_write_addr;
+        awvalid <= 1'b1;
+    end else if (awvalid && awready) begin
+        awvalid <= 1'b0;
+    end
+end
+
+// AXI Slave：只在 AWVALID && AWREADY 时接收地址
+assign awready = can_accept_aw;
+always_ff @(posedge aclk) begin
+    if (awvalid && awready)
+        accepted_awaddr <= awaddr;
+end
+```
+
+AW、W、B、AR、R 五个通道都独立使用各自的 VALID/READY；写地址和写数据不能合并成一个通用 `bus.valid/bus.ready` 握手。
+
+#### Master vs Slave 信号对比
+
+| 信号 | Master 产生 | Slave 产生 |
+|---|---|---|
+| `valid` | ✅ | ❌ |
+| `ready` | ❌ | ✅ |
+| `addr` | ✅ | ❌ |
+| `rdata`/`wdata` | 读时等，写时提供 | 读时提供，写时等 |
+
+---
+
+### 1.5 ACE 协议 (AXI Coherency Extensions)
 
 #### 缓存一致性问题
 
@@ -2454,16 +2471,18 @@ endmodule
 
 ---
 
-## 4. NoC (Network on Chip)
+## 4. NoC 片上互连架构（Network-on-Chip）
 
 ### NoC 概述
 
-**NoC (Network on Chip)** 是片上网络，将计算机网络的概念引入芯片设计，用于超大规模 SoC 中模块间的通信。
+**NoC（Network-on-Chip）**是一类片上互连架构，而不是像 APB、AHB 或 AXI 那样的一套单一总线协议。它把计算机网络中的分包、路由和流量控制引入芯片，适合通信节点较多、物理距离较长或需要并发传输的大规模 SoC。
 
-### NoC vs 传统总线
+连接到 NoC 的 IP 可以继续使用 AXI、CHI 或厂商自定义事务接口，由 Network Interface 将事务转换为 NoC 内部的 Packet/Flit；到达目的节点后，再恢复为目标 IP 使用的协议。
+
+### NoC vs 共享总线/Crossbar
 
 ```
-传统总线 vs NoC:
+共享总线/Crossbar vs NoC:
 
 传统总线 (共享):
 ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
@@ -2555,22 +2574,22 @@ NoC 路由器内部:
 
 ---
 
-## 5. 总线协议对比总结
+## 5. 总线协议与互连架构对比
 
 ### 性能对比
 
-| 协议 | 最大数据带宽 | 延迟 | 复杂度 | 适用场景 |
+| 协议或架构 | 带宽能力 | 延迟 | 复杂度 | 适用场景 |
 |---|---|---|---|---|
 | **AXI4** | 极高 | 低 | 高 | 高性能 SoC |
 | **AXI4-Lite** | 中等 | 低 | 中 | 寄存器配置 |
 | **AHB** | 中等 | 中 | 低 | 中速外设 |
 | **APB** | 低 | 高 | 极低 | 低速外设 |
-| **NoC** | 极高 | 中 | 高 | 大规模 SoC |
+| **NoC 架构** | 取决于拓扑、链路和路由器，可横向扩展 | 可能包含多跳延迟 | 高 | 大规模、多节点 SoC |
 
 ### 选择指南
 
 ```
-选择总线协议的决策树:
+选择事务协议和互连结构的决策树:
 
 高带宽、多个未完成事务或乱序需求?
 ├── 是 → AXI4；规模很大且通信分布复杂时评估 NoC
@@ -2637,9 +2656,97 @@ NoC 路由器内部:
 
 ## 6. 总线验证协议检查
 
+### APB 协议违规检查
+
+#### 6.1 PENABLE 时序
+
+```
+规则:
+- PENABLE 必须在 PSEL 之后的下一个时钟周期断言
+- 等待期间，PSEL/PENABLE 和全部请求负载必须保持稳定
+- 只有 PSEL、PENABLE、PREADY 同时为高的时钟沿才完成传输
+```
+
+```verilog
+property apb_penable_timing;
+    @(posedge PCLK) disable iff (!PRESETn)
+    (PSEL && !PENABLE) |=> PSEL && PENABLE;
+endproperty
+
+property apb_stable_while_waiting;
+    @(posedge PCLK) disable iff (!PRESETn)
+    PSEL && PENABLE && !PREADY |=>
+        PSEL && PENABLE && $stable({PADDR, PWRITE, PWDATA, PSTRB, PPROT});
+endproperty
+
+assert_penable: assert property(apb_penable_timing)
+    else $error("APB: PENABLE not asserted after PSEL");
+assert_stable: assert property(apb_stable_while_waiting)
+    else $error("APB: Address/data changed during transfer");
+```
+
+### AHB 协议违规检查
+
+#### 6.2 HTRANS 与等待周期检查
+
+```
+规则:
+- HTRANS 只能是: IDLE(00), BUSY(01), NONSEQ(10), SEQ(11)
+- 突发传输中第一笔有效传输是 NONSEQ，后续有效传输是 SEQ；BUSY 可插在突发中
+- HREADY 为低时，主设备必须保持地址阶段控制信号稳定
+```
+
+```verilog
+property ahb_htrans_valid;
+    @(posedge HCLK) disable iff (!HRESETn)
+    !$isunknown(HTRANS);
+endproperty
+
+property ahb_control_stable_while_stalled;
+    @(posedge HCLK) disable iff (!HRESETn)
+    !HREADY |=>
+        $stable({HADDR, HTRANS, HWRITE, HSIZE, HBURST,
+                 HPROT, HMASTLOCK, HWDATA});
+endproperty
+
+assert_htrans: assert property(ahb_htrans_valid)
+    else $error("AHB: HTRANS contains X/Z");
+assert_ahb_stable: assert property(ahb_control_stable_while_stalled)
+    else $error("AHB: address/control changed while HREADY was low");
+```
+
+检查 NONSEQ/SEQ 的完整关系通常需要一个按 `HREADY` 更新的突发状态监视器；简单使用
+`$past(HTRANS)` 会在等待周期或 BUSY 插入时误报。
+
+#### 6.3 AHB-Lite HRESP 检查
+
+```
+规则:
+- AHB-Lite 的 HRESP 是 1 位：0 表示 OKAY，1 表示 ERROR
+- ERROR 是两周期响应：第一周期 HRESP=1、HREADY=0，第二周期 HRESP=1、HREADY=1
+- RETRY/SPLIT 属于完整 AHB，不属于 AHB-Lite
+```
+
+```verilog
+property ahb_error_second_cycle;
+    @(posedge HCLK) disable iff (!HRESETn)
+    HRESP && !HREADY |=> HRESP && HREADY;
+endproperty
+
+property ahb_error_has_first_cycle;
+    @(posedge HCLK) disable iff (!HRESETn)
+    HRESP && HREADY |-> $past(HRESP && !HREADY);
+endproperty
+
+assert_error_second: assert property(ahb_error_second_cycle)
+    else $error("AHB-Lite: malformed second ERROR cycle");
+assert_error_first: assert property(ahb_error_has_first_cycle)
+    else $error("AHB-Lite: ERROR completed without its first cycle");
+```
+
 ### AXI4 协议违规检查
 
-#### 6.1 VALID/READY 握手与负载稳定性
+#### 6.4 VALID/READY 握手与负载稳定性
 
 ```
 规则: VALID 一旦断言，必须保持到与 READY 握手；等待期间，与该通道
@@ -2691,7 +2798,7 @@ assert_b_stable: assert property(axi_b_stable_while_stalled)
     else $error("AXI B changed while stalled");
 ```
 
-#### 6.2 突发属性与 4KB 边界检查
+#### 6.5 突发属性与 4KB 边界检查
 
 ```
 规则:
@@ -2793,7 +2900,7 @@ assert_4kb_boundary: assert property(axi_4kb_boundary)
 `awlen inside {[0:255]}` 检查；该表达式对所有已知的 8 位值恒为真。上例同时检查了
 `AWSIZE` 上限、WRAP 起始地址对齐和控制字段中的 X/Z。
 
-#### 6.3 WLAST 检查
+#### 6.6 WLAST 检查
 
 ```
 规则: wlast 必须在突发的最后一个数据拍时为高
@@ -2815,7 +2922,7 @@ assert_wlast: assert property(axi_wlast_check)
 有多笔未完成写事务时，验证组件必须按 AXI4 写数据顺序把每个 W 拍与正确的 AW
 关联；只保存一个全局 `awlen_reg` 会产生误判。
 
-#### 6.4 响应码检查
+#### 6.7 响应码检查
 
 ```
 规则:
@@ -2842,105 +2949,17 @@ assert_exokay_context: assert property(axi_exokay_only_for_exclusive)
     else $error("AXI: EXOKAY returned for a non-exclusive write");
 ```
 
-### AHB 协议违规检查
-
-#### 6.5 HTRANS 与等待周期检查
-
-```
-规则:
-- HTRANS 只能是: IDLE(00), BUSY(01), NONSEQ(10), SEQ(11)
-- 突发传输中第一笔有效传输是 NONSEQ，后续有效传输是 SEQ；BUSY 可插在突发中
-- HREADY 为低时，主设备必须保持地址阶段控制信号稳定
-```
-
-```verilog
-property ahb_htrans_valid;
-    @(posedge HCLK) disable iff (!HRESETn)
-    !$isunknown(HTRANS);
-endproperty
-
-property ahb_control_stable_while_stalled;
-    @(posedge HCLK) disable iff (!HRESETn)
-    !HREADY |=>
-        $stable({HADDR, HTRANS, HWRITE, HSIZE, HBURST,
-                 HPROT, HMASTLOCK, HWDATA});
-endproperty
-
-assert_htrans: assert property(ahb_htrans_valid)
-    else $error("AHB: HTRANS contains X/Z");
-assert_ahb_stable: assert property(ahb_control_stable_while_stalled)
-    else $error("AHB: address/control changed while HREADY was low");
-```
-
-检查 NONSEQ/SEQ 的完整关系通常需要一个按 `HREADY` 更新的突发状态监视器；简单使用
-`$past(HTRANS)` 会在等待周期或 BUSY 插入时误报。
-
-#### 6.6 AHB-Lite HRESP 检查
-
-```
-规则:
-- AHB-Lite 的 HRESP 是 1 位：0 表示 OKAY，1 表示 ERROR
-- ERROR 是两周期响应：第一周期 HRESP=1、HREADY=0，第二周期 HRESP=1、HREADY=1
-- RETRY/SPLIT 属于完整 AHB，不属于 AHB-Lite
-```
-
-```verilog
-property ahb_error_second_cycle;
-    @(posedge HCLK) disable iff (!HRESETn)
-    HRESP && !HREADY |=> HRESP && HREADY;
-endproperty
-
-property ahb_error_has_first_cycle;
-    @(posedge HCLK) disable iff (!HRESETn)
-    HRESP && HREADY |-> $past(HRESP && !HREADY);
-endproperty
-
-assert_error_second: assert property(ahb_error_second_cycle)
-    else $error("AHB-Lite: malformed second ERROR cycle");
-assert_error_first: assert property(ahb_error_has_first_cycle)
-    else $error("AHB-Lite: ERROR completed without its first cycle");
-```
-
-### APB 协议违规检查
-
-#### 6.7 PENABLE 时序
-
-```
-规则:
-- PENABLE 必须在 PSEL 之后的下一个时钟周期断言
-- 等待期间，PSEL/PENABLE 和全部请求负载必须保持稳定
-- 只有 PSEL、PENABLE、PREADY 同时为高的时钟沿才完成传输
-```
-
-```verilog
-property apb_penable_timing;
-    @(posedge PCLK) disable iff (!PRESETn)
-    (PSEL && !PENABLE) |=> PSEL && PENABLE;
-endproperty
-
-property apb_stable_while_waiting;
-    @(posedge PCLK) disable iff (!PRESETn)
-    PSEL && PENABLE && !PREADY |=>
-        PSEL && PENABLE && $stable({PADDR, PWRITE, PWDATA, PSTRB, PPROT});
-endproperty
-
-assert_penable: assert property(apb_penable_timing)
-    else $error("APB: PENABLE not asserted after PSEL");
-assert_stable: assert property(apb_stable_while_waiting)
-    else $error("APB: Address/data changed during transfer");
-```
-
 ### 协议检查总结
 
 | 协议 | 检查项 | 违规后果 |
 |------|--------|---------|
+| **APB** | PENABLE 时序 | 传输失败、数据错误 |
+| **AHB** | HTRANS 合法性 | 总线协议状态机错误 |
+| **AHB** | HRESP 两周期响应 | 从设备响应时序错误 |
 | **AXI4** | valid/ready 握手 | 死锁、数据丢失 |
 | **AXI4** | 突发长度/4KB 边界 | 地址越界、数据覆盖 |
 | **AXI4** | WLAST 正确性 | 事务结束判断错误 |
 | **AXI4** | 响应码合法性 | 错误处理异常 |
-| **AHB** | HTRANS 合法性 | 总线协议状态机错误 |
-| **AHB** | HRESP 两周期响应 | 从设备响应时序错误 |
-| **APB** | PENABLE 时序 | 传输失败、数据错误 |
 
 ---
 
@@ -2961,4 +2980,4 @@ assert_stable: assert property(apb_stable_while_waiting)
 
 ---
 
-*最后更新: 2026-07-22*
+*最后更新: 2026-07-23*
